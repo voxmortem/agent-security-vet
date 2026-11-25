@@ -1,10 +1,12 @@
 {
   "name": "agent-security-vet",
   "version": "1.0.0",
-  "description": "Security vetting skill for the AI-agent supply chain: vet skills, plugins, MCP servers and repositories before install, check articles and pages for hidden prompt injection and for the truth of their claims, and audit a browsing-agent setup with benign canary pages. No hooks, no MCP servers.",
+  "description": "Offline, static security vetting for the AI-agent supply chain: check whether a Claude Code skill, plugin, MCP server or repository is safe before you install it, check articles and web pages for hidden prompt injection and for the truth of their claims, and audit a browsing-agent setup with benign canary pages. Python standard library only; never runs what it scans. No hooks, no MCP servers.",
   "author": {
     "name": "agent-security-vet contributors"
   },
+  "homepage": "https://github.com/voxmortem/agent-security-vet",
+  "repository": "https://github.com/voxmortem/agent-security-vet",
   "license": "MIT",
-  "keywords": ["security", "prompt-injection", "supply-chain", "mcp", "vetting"]
+  "keywords": ["security", "prompt-injection", "indirect-prompt-injection", "supply-chain-security", "mcp", "mcp-security", "agent-skills", "claude-code", "skill-vetting", "static-analysis", "hidden-text", "unicode-security", "canary-testing", "ai-agent-security"]
 }

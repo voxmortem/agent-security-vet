@@ -1,6 +1,16 @@
 # agent-security-vet
 
-A Claude Code skill (`vet-agent-security`) plus a dependency-free static scanner for one question:
+[![ci](https://github.com/voxmortem/agent-security-vet/actions/workflows/ci.yml/badge.svg)](https://github.com/voxmortem/agent-security-vet/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**agent-security-vet** is an open-source Claude Code skill (`vet-agent-security`) plus an offline,
+static security scanner for the AI-agent supply chain. It helps you check whether a third-party agent
+skill, plugin, MCP server or repository is safe to install; whether an article or web page carries
+hidden prompt injection (invisible Unicode, hidden HTML/CSS, encoded instructions) and whether its claims
+hold up; and how your own browsing agent reacts to benign canary pages. It is for developers and
+security-minded users of Claude Code and other tool-using AI agents. The scanner uses only the Python
+standard library (3.10+), is MIT-licensed, and never executes, imports or installs what it scans.
+A clean scan means "no automated flags", never "safe".
 
 > **Is it safe to let my agent load, install or read this?**
 
@@ -18,6 +28,42 @@ files that reconfigure the agent, and the exfiltration channels that turn a hija
 
 Standard library only, Python 3.10+. Nothing from a scanned target is ever executed, imported, installed
 or extracted.
+
+**Contents:** [Why](#why) - [Quick start](#quick-start-2-minutes) - [Install](#install) - [Use](#use) -
+[How detection works](#how-detection-works) - [Honest limits](#honest-limits) -
+[Measured results](#measured-results) - [FAQ](#faq) - [Development](#development)
+
+## Why
+
+Agents now install skills, plugins and MCP servers written by strangers, and read web pages written by
+anyone. A skill can run a shell command when it loads, an MCP tool description can carry instructions,
+a project file can switch off permission prompts, and a web page can hold text that a human never sees
+but an agent reads as an order. Reading every file by hand is the right answer and rarely happens.
+
+This project gives that reading a repeatable first pass: a scanner that splits text by who can see it,
+decodes what is hidden, applies 154 rules (`--list-rules`), and reports what it could not analyze; and a
+skill that turns the findings into a review with a verdict and two explicit lists, Verified and Not
+verified. It is a first pass for a human or a model to read with, not a replacement for reading.
+
+## Quick start (2 minutes)
+
+Needs Python 3.10+ and git. Nothing to install.
+
+```bash
+# 1. Get the scanner
+git clone https://github.com/voxmortem/agent-security-vet
+cd agent-security-vet
+
+# 2. Fetch the thing you want to vet into a new temp folder (hooks and symlinks off, no submodules)
+git -c core.hooksPath=/dev/null -c core.symlinks=false clone --depth 1 --no-recurse-submodules --no-tags -- '<git url>' '<tmpdir>/candidate'
+
+# 3. Scan it: a Markdown report, exit code 1 if anything is HIGH
+python -I skills/vet-agent-security/scripts/scan.py --format md --fail-on HIGH -- '<tmpdir>/candidate'
+```
+
+`<tmpdir>` is a new, empty folder under the OS temp directory, outside any project (see
+[Where to put a target](#where-to-put-a-target)). Then read the files the report points to. To let Claude do the review with you, install the skill (see
+[Install](#install)) and ask: "Vet this skill before I install it: `<git url>`".
 
 ## Install
 
@@ -296,6 +342,76 @@ on `127.0.0.1`, give your own agent normal summarization tasks, and score which 
 it at least twice.
 See [references/canary-testing.md](skills/vet-agent-security/references/canary-testing.md).
 Test only agents and pages that you own.
+
+## FAQ
+
+### How do I check that a Claude Code skill or plugin is safe before installing it?
+
+Copy it into a new folder under the OS temp directory without running anything (the shallow `git clone`
+in [Quick start](#quick-start-2-minutes) turns hooks and symlinks off), scan it with
+`scan.py --format md`, then read `SKILL.md`, every script and every manifest yourself. With the skill
+installed, ask Claude "Vet this skill before I install it" and it follows the same steps, ending in
+APPROVE / HOLD / REJECT with Verified and Not verified lists. Nothing is installed without your OK.
+
+### How do I check an MCP server before adding it?
+
+Scan the server's repository or your `.mcp.json` (`--kind mcp`). The structure checks flag remote
+servers, shell-wrapped commands, unpinned packages, secrets passed through, look-alike package scopes
+and instruction-like text in tool descriptions. Tool lists that a remote server sends at run time are not
+visible to a static scan.
+
+### What is indirect prompt injection in a web page?
+
+Text inside content an agent reads (a page, a document, a tool result) that tries to take over the
+agent's task, for example by asking it to mail a private file to a stranger. It is often hidden from
+humans with CSS, HTML comments, attributes or invisible Unicode. Save the page with `fetch_page.py` and scan it with
+`--kind page` before an agent reads it.
+
+### Can a scanner detect hidden Unicode instructions?
+
+For the families it knows, yes: Unicode Tags and variation-selector runs are decoded and shown,
+zero-width and other format characters are stripped before matching and reported inside words,
+bidirectional overrides are HIGH, and look-alike Cyrillic/Greek letters are normalized (a curated
+subset, not the full confusables data). See [How detection works](#how-detection-works).
+
+### Does it run the code it scans?
+
+No. Nothing from a target is executed, imported, installed or extracted. Archives are listed and small
+text members read in memory, links and junctions are never followed, and there is no XML entity
+expansion. The skill has no hooks, no MCP servers and no pre-approved tools.
+
+### How is this different from runtime or LLM-based scanners?
+
+This one is static, offline and uses only the Python standard library: no network calls during a scan,
+no model, no API key, and the same input gives the same report. That makes it cheap to run in CI and
+hard to talk out of a finding, but it matches shapes, not meaning. Runtime monitoring and model-based
+review catch other things (behaviour, novel wording); use them alongside it, not instead of it.
+
+### What does it NOT detect?
+
+Novel, politely worded instructions without known phrasing; text in images, audio, video, compressed
+PDF streams or encrypted archives; content fetched or generated at run time; hiding done by external
+stylesheets or scripts; logic bugs and ordinary-looking backdoors; languages other than English and
+Russian. The full list is in [Honest limits](#honest-limits).
+
+### How accurate is it?
+
+On public InjecAgent data with `--kind page`: 1054 / 1054 attacks that use the override phrase were
+HIGH, 0 / 1054 benign tool responses were HIGH, and only 17 / 1054 (1.6%) of plain semantic attacks
+without an override phrase were HIGH. Those numbers describe this dataset only; see
+[Measured results](#measured-results).
+
+### Does a clean scan mean it is safe?
+
+No. "No automated flags" means only that. Read the instruction files in full and check the
+`scan complete` line in the report header; an `INCOMPLETE SCAN` hint means part of the target was not
+analyzed.
+
+### Can I use it in CI or without Claude Code?
+
+Yes. The scripts run on their own with Python. `--format sarif` gives SARIF output, `--format json` gives
+machine-readable findings, and `--fail-on HIGH|MED|LOW|NONE` sets the exit code. A hash-bound
+[baseline](#baseline-for-your-own-repositories) suppresses reviewed findings in your own repositories.
 
 ## Repository layout
 

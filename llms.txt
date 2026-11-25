@@ -1,0 +1,33 @@
+# agent-security-vet
+
+> agent-security-vet is an open-source (MIT) Claude Code skill, `vet-agent-security`, plus an offline, static security scanner for the AI-agent supply chain. It checks third-party agent skills, plugins, MCP servers and repositories before installation, checks articles and web pages for hidden prompt injection (invisible Unicode, hidden HTML/CSS, encoded text) and for the truth of their claims, and audits a browsing-agent setup with benign canary pages. Python standard library only, 3.10+. The scanner never executes, imports or installs what it scans. A clean scan means "no automated flags", not proof of safety; semantic attacks without known override wording are mostly not detected.
+
+Naming: the repository and plugin are `agent-security-vet`; the skill folder and skill name are `vet-agent-security`.
+
+## Docs
+
+- [README](https://github.com/voxmortem/agent-security-vet/blob/main/README.md): what it is, quick start, install, usage, detection, honest limits, measured results, FAQ
+- [SKILL.md](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/SKILL.md): the skill itself; hard rules and the three modes (A: skill/plugin/MCP/repo, B: article/page, C: own agent setup)
+- [CHANGELOG](https://github.com/voxmortem/agent-security-vet/blob/main/CHANGELOG.md): release history
+- [SECURITY](https://github.com/voxmortem/agent-security-vet/blob/main/SECURITY.md): how to report vulnerabilities and scanner bypasses
+
+## References
+
+- [Threat model](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/references/threat-model.md): indirect prompt injection, the "lethal trifecta", supply-chain vectors, with sources
+- [Vetting checklist](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/references/vetting-checklist.md): manual review steps for skills, plugins, MCP servers and repositories
+- [Article vetting](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/references/article-vetting.md): checking a page for hidden injection and checking its claims
+- [Browsing-agent hardening](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/references/browsing-agent-hardening.md): reducing exposure of a browsing or tool-using agent
+- [Canary testing](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/references/canary-testing.md): benign canary pages for testing your own agent
+- [Report templates](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/references/report-templates.md): verdict format with Verified and Not verified lists
+
+## Scripts
+
+- [scan.py](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/scripts/scan.py): static scanner; Markdown, JSON or SARIF output; `--list-rules` prints all rules
+- [fetch_page.py](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/scripts/fetch_page.py): raw page fetch with an SSRF guard, no cookies
+- [canary_pages.py](https://github.com/voxmortem/agent-security-vet/blob/main/skills/vet-agent-security/scripts/canary_pages.py): canary page generator and scorer
+
+## Optional
+
+- [Measurement tool](https://github.com/voxmortem/agent-security-vet/blob/main/tools/measure_injecagent.py): recall and false-positive measurement on local InjecAgent clones
+- [Contributing](https://github.com/voxmortem/agent-security-vet/blob/main/CONTRIBUTING.md)
+- [License (MIT)](https://github.com/voxmortem/agent-security-vet/blob/main/LICENSE)

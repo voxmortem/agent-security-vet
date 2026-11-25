@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata in this file."
+type: software
+title: "agent-security-vet: offline, static security vetting for AI-agent skills, plugins, MCP servers and web content"
+abstract: >-
+  agent-security-vet is a Claude Code skill (vet-agent-security) plus an offline,
+  static scanner written with the Python standard library only. It checks
+  third-party agent skills, plugins, MCP servers and repositories before
+  installation, checks articles and web pages for hidden prompt injection, and
+  audits a browsing-agent setup with benign canary pages. It never executes
+  the content it scans. A clean scan is not proof of safety.
+authors:
+  - name: "agent-security-vet contributors"
+repository-code: "https://github.com/voxmortem/agent-security-vet"
+url: "https://github.com/voxmortem/agent-security-vet"
+license: MIT
+version: 1.0.0
+date-released: 2026-11-26
+keywords:
+  - prompt-injection
+  - indirect-prompt-injection
+  - ai-agent-security
+  - supply-chain-security
+  - mcp
+  - claude-code
+  - agent-skills
+  - static-analysis

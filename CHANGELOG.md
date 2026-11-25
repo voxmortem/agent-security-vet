@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. The format follows Keep a Changelog, and
 versions follow semantic versioning.
 
+## [Unreleased]
+
+### Documentation
+- README: a standalone opening paragraph (what it is, who it is for), CI and license badges, a short
+  contents line, "Why", "Quick start (2 minutes)" and "FAQ" sections. The "Honest limits" and
+  "Measured results" sections are unchanged.
+- `SKILL.md` frontmatter `description` rewritten to list the concrete situations the skill is for, in
+  English and Russian; `name` unchanged; no behaviour change.
+- `.claude-plugin/plugin.json` and `marketplace.json`: aligned descriptions, more specific keywords,
+  `homepage` and `repository` fields.
+- Added `llms.txt` (summary and links for language-model tools) and `CITATION.cff` (CFF 1.2.0).
+
 ## [1.0.0] - 2026-11-26
 
 ### Added
