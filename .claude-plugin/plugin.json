@@ -1,0 +1,10 @@
+{
+  "name": "agent-security-vet",
+  "version": "1.0.0",
+  "description": "Security vetting skill for the AI-agent supply chain: vet skills, plugins, MCP servers and repositories before install, check articles and pages for hidden prompt injection and for the truth of their claims, and audit a browsing-agent setup with benign canary pages. No hooks, no MCP servers.",
+  "author": {
+    "name": "agent-security-vet contributors"
+  },
+  "license": "MIT",
+  "keywords": ["security", "prompt-injection", "supply-chain", "mcp", "vetting"]
+}

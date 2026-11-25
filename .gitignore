@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local scratch, scan output and test leftovers (never commit scan reports of other people's code)
+.scratch/
+.tmp/
+tmp/
+*.scan.md
+*.scan.json
+*.sarif
+vetscan-test-*/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

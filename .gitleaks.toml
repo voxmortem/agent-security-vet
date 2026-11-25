@@ -1,0 +1,9 @@
+# gitleaks configuration for this repository.
+# Only files under tests/ are allowlisted. They hold SYNTHETIC secret-shaped strings that the
+# output-masking and rule tests need as input. They are not real credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic secret-shaped fixtures in the test-suite"
+paths = ['''tests/.*\.py''']

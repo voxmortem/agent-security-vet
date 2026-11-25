@@ -1,0 +1,18 @@
+{
+  "name": "agent-security-vet",
+  "owner": {
+    "name": "agent-security-vet contributors"
+  },
+  "metadata": {
+    "description": "Security vetting for agent skills, plugins, MCP servers, repositories and web content",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-security-vet",
+      "description": "Vet skills, plugins, MCP servers, repositories and web pages before an agent trusts them; audit a browsing-agent setup with benign canary pages.",
+      "source": "./",
+      "category": "security"
+    }
+  ]
+}

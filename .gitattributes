@@ -1,0 +1,21 @@
+# Text files are stored and checked out with LF line endings, whatever core.autocrlf says
+# (tests/test_selfscan.py rejects CRLF, and fixtures must hash the same on every platform).
+* text=auto eol=lf
+
+# Binary formats: never converted. None are committed today; listed for future fixtures.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.bz2 binary
+*.xz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
