@@ -10,8 +10,10 @@ import unittest
 
 from _support import ROOT, SKILL_DIR, describe, scan
 
+# phrases.py joined the list with the reviewer-steering rules, whose literal words ("already vetted ... skip")
+# read like the attack they describe, exactly as the code-behaviour tables do.
 SIGNATURE_FILES = {"scripts/vetscan/coderules.py", "scripts/vetscan/configs.py", "scripts/vetscan/textutil.py",
-                   "scripts/vetscan/framing.py"}
+                   "scripts/vetscan/framing.py", "scripts/vetscan/phrases.py"}
 TEXT_EXT = (".py", ".md", ".json", ".yml", ".yaml", ".txt", ".toml", ".cfg", "")
 SKIP_DIRS = {".git", "__pycache__", ".scratch"}
 CYRILLIC_OK = {os.path.join("skills", "vet-agent-security", "scripts", "vetscan", "phrases.py"),

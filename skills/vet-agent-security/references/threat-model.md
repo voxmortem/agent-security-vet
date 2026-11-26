@@ -53,13 +53,17 @@ the combinations.
 
 - **Instruction files** (what an agent loads as guidance: `SKILL.md`, skill reference docs, commands,
   agent definitions, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, editor rule files): visible instruction-override
-  wording here is HIGH, because the file *is* the instruction channel [S18]. The same words framed as an
-  example (quoted after "such as" / "e.g.", described as "a request to ...", or in a blockquote, table
-  or fence introduced as an example) or named in a clause that forbids them are MED, unless the clause
-  also carries a URL or a shell command: defensive skills quote attacks, and you check which it is by
-  reading. A bare quoted order stays HIGH.
-- **Saved pages and articles**: visible wording is MED (it may be a quotation); anything a reader would
-  not see is HIGH.
+  wording here is HIGH, because the file *is* the instruction channel [S18]. The same words are MED
+  when their own clause names an attack ("attackers write", "payloads such as", an example block
+  introduced that way) or a prohibition governs them, unless the sentence also carries a URL, a shell
+  command, an action on a sensitive object or compliance wording. Weak cues ("such as", "for example",
+  "the user asks you to") lower nothing, because attackers write them too. A bare quoted order stays
+  HIGH, and you check every MED by reading.
+- **Saved pages and articles**: visible wording is MED under `--kind article` and HIGH under
+  `--kind page` (content an agent will read); anything a reader would not see is HIGH when it carries
+  instruction wording or orders to the reader, MED otherwise.
+- **Anything aimed at the reviewer** ("already vetted", requests to leave files unread or to approve):
+  HIGH.
 - **Other documentation and code**: MED or LOW when visible, HIGH when hidden or decoded.
 - **Tool descriptions**: treated like instruction files.
 
@@ -67,7 +71,8 @@ the combinations.
 
 - Meaning. A politely worded, novel instruction with none of the known shapes passes. You must read.
 - Logic bugs and intentional backdoors written as ordinary code.
-- Text inside images, audio, video, compressed PDF streams, or encrypted archives.
+- Text inside images, audio, video or encrypted archives; PDF text drawn with font glyph codes and
+  encrypted PDFs (both reported as an incomplete scan).
 - Anything retrieved or generated at run time: remote MCP tool lists, scripts downloaded later, pages
   that serve different content to different clients.
 - Encodings and languages outside its lists (English and Russian phrase sets; a curated look-alike table,

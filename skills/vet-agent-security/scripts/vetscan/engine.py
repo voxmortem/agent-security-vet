@@ -17,7 +17,7 @@ import time
 import unicodedata
 from urllib.parse import parse_qsl, urlsplit
 
-from . import archives, coderules, configs, decoders, framing, invisible, markup, phrases
+from . import archives, coderules, configs, decoders, framing, invisible, markup, pdf, phrases
 from . import textutil as T
 from .model import RULES, SEV_RANK, Finding, lower, rule
 
@@ -34,6 +34,7 @@ rule("bin-nontext", "binary", "non-text file that cannot be inspected")
 rule("bin-type-mismatch", "binary", "file content does not match its extension")
 rule("bin-pickle", "binary", "serialized object file whose loading can execute code")
 rule("bin-pdf-active", "binary", "PDF with active content markers")
+rule("pdf-unanalyzed", "scan", "PDF content that could not be analyzed (encryption, unsupported filter, size limit, glyph codes)")
 rule("obf-blob", "obfuscation", "long opaque encoded blob")
 rule("obf-embedded-binary", "obfuscation", "base64 blob that decodes to an executable/archive")
 rule("obf-minified", "obfuscation", "minified or packed code that cannot be reviewed line by line")
@@ -42,6 +43,9 @@ rule("decode-budget", "scan", "too many encoded blobs: some were not decoded")
 rule("decode-limit", "scan", "encoded content left undecoded (size or nesting-depth limit)")
 rule("match-limit", "scan", "too many matches of one phrase rule: later occurrences were not examined")
 rule("html-hidden-text", "hidden", "text inside elements that are not rendered")
+rule("hidden-order", "hidden", "text a reader does not see gives orders to the reader (hidden instruction)")
+rule("html-collapsed-text", "markup", "text inside a closed <details> block (shown only when expanded)")
+rule("css-indirection", "hidden", "visibility-deciding CSS property set through var(): the value can come from anywhere")
 rule("html-comment-text", "hidden", "comment text that is invisible when rendered")
 rule("html-meta-refresh", "markup", "page redirects itself with meta refresh")
 rule("html-base-href", "markup", "base href rewrites every relative link")
@@ -85,12 +89,16 @@ GENERATED_NAMES = frozenset(("package-lock.json", "yarn.lock", "pnpm-lock.yaml",
 GENERATED_SUFFIX = (".min.js", ".min.css", ".min.mjs", ".map", ".bundle.js")
 AUTOLOAD_NAMES = frozenset(("claude.md", "claude.local.md", "agents.md", "agent.md", "gemini.md", ".cursorrules",
                             ".windsurfrules", ".clinerules", "copilot-instructions.md", ".goosehints", "llms.txt",
-                            "llms-full.txt", "warp.md", "crush.md", "qwen.md", ".rules"))
+                            "llms-full.txt", "warp.md", "crush.md", "qwen.md", ".rules", "agents.override.md",
+                            "conventions.md", "replit.md", "opencode.md", ".kilocoderules", ".roorules", "jules.md"))
 AUTOLOAD_PATH_RX = re.compile(
     r"(?:^|/)(?:\.cursor/rules/|\.windsurf/rules/|\.github/instructions/|\.github/prompts/|\.github/chatmodes/|"
     r"\.claude/(?:commands|agents|rules|skills|output-styles)/|\.clinerules/|\.roo/rules[^/]{0,30}/|"
     r"\.kiro/steering/|\.amazonq/rules/|\.continue/rules/|\.augment/rules/|\.trae/rules/|"
-    r"\.openhands/microagents/|\.agents?/|\.codex/|\.gemini/)[^\n]{1,300}\.(?:md|mdc|txt)$|"
+    r"\.openhands/microagents/|\.agents?/|\.codex/|\.gemini/|\.qwen/|\.cursor/commands/|\.github/agents/|"
+    r"\.opencode/(?:agents?|commands?|modes?)/|\.zed/|\.kilocode/rules[^/]{0,30}/|\.crush/|\.goose/)"
+    r"[^\n]{1,300}\.(?:md|mdc|txt)$|"
+    r"(?:^|/)\.(?:gemini|qwen)/commands/[^\n]{1,300}\.toml$|"
     r"(?:^|/)\.junie/guidelines\.md$")
 PLUGIN_COMPONENT_RX = re.compile(r"(?:^|/)(?:commands|agents|output-styles|workflows)/[^\n]{1,300}\.md$")
 DOC_NAME_RX = re.compile(
@@ -142,6 +150,37 @@ _VIEW_TOKEN_RX = re.compile(r"(?<![a-z0-9])(?=[a-z]{0,200}[0-9])(?=[0-9]{0,200}[
 def _mask_view_token(m):
     return m.group(0)[:4] + "...[masked %d chars]" % len(m.group(0))
 
+
+def _line_starts(text):
+    starts, i = [0], text.find("\n")
+    while i != -1:
+        starts.append(i + 1)
+        i = text.find("\n", i + 1)
+    return starts
+
+
+def _line_window(text, starts, line, match, width=320):
+    """Raw text from the first word of a phrase match to `width` characters after it (same line onward)."""
+    start = starts[min(max(line, 1), len(starts)) - 1]
+    first = match.split(" ", 1)[0].split("\n", 1)[0]
+    i = text[start:start + 4000].lower().find(first) if first else -1
+    i = start if i < 0 else start + i
+    return text[i:i + width]
+
+
+_WORDS_RX = re.compile(r"[\W_]+")
+
+
+def _mirrored(snippet, visible_words):
+    """True when the words around a cue also stand in the visible text (a caption or a page description)."""
+    words = " ".join(_WORDS_RX.sub(" ", snippet.lower()).split()[1:9])
+    return len(words.split()) >= 4 and words in visible_words
+
+
+# Streams of page data rather than prose: JSON blocks, attribute values, meta tags.
+_DATA_LABELS = frozenset(("JSON data block", "attribute value", "meta tag", "inline script"))
+HIDDEN_MED_CHARS = 20           # visible characters of hidden text that make html-hidden-text MED on pages
+
 STREAM_LABEL = {
     "comment": "HTML comment", "hidden": "hidden element", "attr": "attribute value", "meta": "meta tag",
     "jsonld": "JSON data block", "script": "inline script", "style": "stylesheet", "svg": "SVG text",
@@ -182,7 +221,7 @@ class Budget:
 
 class Options:
     def __init__(self, kind="auto", max_bytes=8_000_000, max_files=20_000, file_budget=20.0, total_budget=600.0,
-                 scan_archives=True, include_vendored=False):
+                 scan_archives=True, include_vendored=False, dump_streams=False, dump_filter=None):
         self.kind = kind
         self.max_bytes = max_bytes
         self.max_files = max_files
@@ -190,6 +229,13 @@ class Options:
         self.total_budget = total_budget
         self.scan_archives = scan_archives
         self.include_vendored = include_vendored
+        self.dump_streams = dump_streams
+        self.dump_filter = dump_filter
+
+
+DUMP_FILE_CHARS = 400_000       # derived text kept per file for --dump-streams
+DUMP_TOTAL_CHARS = 4_000_000    # and for the whole run
+DUMP_DECODED = 200              # decoded payloads kept per file
 
 
 class FileCtx:
@@ -219,7 +265,13 @@ class FileCtx:
 
 def auto_kind(path):
     """Guess what the target is: skill | mcp | repo | article."""
-    if os.path.isfile(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return "repo"
+    if Scan._is_link_stat(st):
+        return "repo"           # a link is reported, never opened or listed
+    if stat.S_ISREG(st.st_mode):
         name = os.path.basename(path).lower()
         ext = os.path.splitext(name)[1]
         if name == "skill.md":
@@ -228,6 +280,15 @@ def auto_kind(path):
             return "repo"
         if name in (".mcp.json", "mcp.json", "claude_desktop_config.json"):
             return "mcp"
+        try:
+            with open(path, "rb") as fh:
+                head = fh.read(512)
+        except OSError:
+            head = b""
+        akind = archives.kind_of(name, head)
+        if akind in ("zip", "tar"):
+            # An archive is what its members are: a packed skill is vetted like the unpacked skill.
+            return archives.kind_from_names(archives.member_names(path, akind))
         if ext in HTML_EXT or ext in PROSE_EXT or ext == ".pdf":
             return "article"
         return "repo"
@@ -317,6 +378,12 @@ class Scan:
         self._phr = {}
         self._url_seen = set()
         self._limits = {}          # (file, kind) -> count of content left unanalyzed by a limit
+        self.dumps = []            # (file, stream label, text) for --dump-streams
+        self._dump_chars = {}
+        self._dump_total = 0
+        self._keys = set()         # findings already reported (an extra decoding pass adds no duplicates)
+        self._alt = False
+        self._orders_chars = 0
 
     safe = staticmethod(T.sanitize)
 
@@ -326,6 +393,10 @@ class Scan:
         rel = fc.rel if isinstance(fc, FileCtx) else str(fc)
         if rid not in RULES:
             rule(rid, "misc", rid)
+        dkey = (sev, rid, rel, line, (snippet or "")[:120])
+        if self._alt and dkey in self._keys:
+            return
+        self._keys.add(dkey)
         key = (rid, rel, sev)
         n = self.counts.get(key, 0) + 1
         self.counts[key] = n
@@ -341,6 +412,27 @@ class Scan:
         if len(self.inventory) < 400:
             self.inventory.append(T.sanitize(text, 420))
 
+    def dump(self, fc, label, text):
+        """Keep derived text for --dump-streams (sanitized only when printed)."""
+        if not self.opts.dump_streams or not text or not text.strip():
+            return
+        rel = fc.rel if isinstance(fc, FileCtx) else str(fc)
+        flt = self.opts.dump_filter
+        if flt and flt.lower() not in rel.lower():
+            return
+        used = self._dump_chars.get(rel, 0)
+        room = min(DUMP_FILE_CHARS - used, DUMP_TOTAL_CHARS - self._dump_total)
+        if room <= 0:
+            if used < DUMP_FILE_CHARS + 1:
+                self._dump_chars[rel] = DUMP_FILE_CHARS + 1
+                self.dumps.append((rel, "(dump limit)", "... further derived text of this file was not kept "
+                                   "(narrow it with --dump-filter)"))
+            return
+        part = text[:room]
+        self._dump_chars[rel] = used + len(part)
+        self._dump_total += len(part)
+        self.dumps.append((rel, label, part))
+
     # ------------------------------------------------------------ walking
 
     def run(self, target):
@@ -349,9 +441,13 @@ class Scan:
             self.kind = auto_kind(target)
         self.total = Budget(self.opts.total_budget)
         self.root_name = os.path.basename(target.rstrip("/" + os.sep))
-        if os.path.isfile(target) or os.path.islink(target):
+        st = os.lstat(target)
+        if self._is_link_stat(st):
+            # The target itself is a symlink, junction or other reparse point: report it, do not follow it.
             self.root_name = ""
-            st = os.lstat(target)
+            self._link(target, os.path.basename(target.rstrip("/" + os.sep)) or target)
+        elif stat.S_ISREG(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            self.root_name = ""
             self.all_in_skill = self.kind == "skill"
             self._scan_entry(target, os.path.basename(target), st, single=True)
         else:
@@ -420,8 +516,15 @@ class Scan:
             stack.extend(reversed(subdirs))
 
     @staticmethod
+    def _is_link_stat(st):
+        """lstat result of a symlink, junction or other reparse point. On Windows a junction is not
+        S_ISLNK: it carries FILE_ATTRIBUTE_REPARSE_POINT (0x400) and a reparse tag instead."""
+        return (stat.S_ISLNK(st.st_mode) or bool((getattr(st, "st_file_attributes", 0) or 0) & 0x400)
+                or bool(getattr(st, "st_reparse_tag", 0)))
+
+    @staticmethod
     def _is_reparse(entry, st):
-        attrs = getattr(st, "st_file_attributes", 0)
+        attrs = getattr(st, "st_file_attributes", 0) or 0
         if attrs & 0x400:      # FILE_ATTRIBUTE_REPARSE_POINT: junctions, mount points, cloud placeholders
             return True
         isj = getattr(entry, "is_junction", None)
@@ -442,6 +545,10 @@ class Scan:
                  "link was not followed%s" % ("; target is absolute or leaves the scanned tree" if escapes else ""))
 
     def _check_name(self, rel, name):
+        if any(ord(c) < 32 or ord(c) == 127 for c in name):
+            self.add("HIGH", "fs-name-trick", rel, 0, name,
+                     "file name contains control characters (line breaks can forge report lines)")
+        self._name_steer(rel, name)
         if not name.isascii():
             if T.INVISIBLE_RX.search(name) or any(unicodedata.category(c)[0] == "C" for c in name):
                 self.add("HIGH", "fs-name-trick", rel, 0, name,
@@ -458,6 +565,22 @@ class Scan:
         if name != name.rstrip(". ") or WIN_RESERVED.match(low) or name.startswith("-"):
             self.add("MED", "fs-name-trick", rel, 0, name,
                      "name is a reserved device name, starts with '-' or ends with dot/space")
+
+    def _name_steer(self, rel, name):
+        """A file name is read by the reviewer too: one that speaks to the reviewer is an attack."""
+        if len(name) < 12:
+            return
+        words = re.sub(r"[\W_]+", " ", name).strip()
+        hit = phrases.NAME_STEER_RX.search(words)
+        if not hit:
+            for h in phrases.scan_text(words):
+                if h.rule == "inj-reviewer-steer":
+                    hit = h
+                    break
+        if hit:
+            self.add("HIGH", "inj-reviewer-steer", rel, 0, name,
+                     "the file name addresses the reviewer or forges scanner output (verdict, 'already vetted', "
+                     "'skip ...'): a name is not a channel for instructions")
 
     def _git_dir(self, path, rel):
         """A copied .git can execute commands through config and hooks; inspect only those."""
@@ -585,10 +708,12 @@ class Scan:
         fc = FileCtx(parent_fc.rel + "!/" + member_name.replace("\\", "/"), len(data))
         fc.in_archive = True
         fc.sha256 = parent_fc.sha256
+        self._check_name(fc.rel, member_name.replace("\\", "/").rsplit("/", 1)[-1] or member_name)
         self._scan_data(fc, data, path=None)
 
     def _scan_data(self, fc, data, path=None):
         budget = Budget(self.opts.file_budget)
+        self._orders_chars = 0
         head = data[:512]
         if path and self.opts.scan_archives and not fc.in_archive:
             akind = archives.kind_of(fc.name, head)
@@ -601,17 +726,34 @@ class Scan:
             self._classify(fc)
             self._binary(fc, data, budget)
             return
-        text, enc = T.decode_bytes(data)
-        if enc == "utf-8-lossy":
+        dec = T.decode_text(data)
+        text, enc = dec.text, dec.label
+        if dec.legacy:
+            self.add("MED", "enc-unusual", fc, 0, "", "file is not UTF-8: %s; the decoded text was scanned. Tools that "
+                     "assume UTF-8 show it garbled, while a browser or an agent may read it" % dec.describe())
+        elif enc == "utf-8-lossy":
             self.add("LOW", "enc-unusual", fc, 0, "", "file is not valid UTF-8; undecodable bytes were replaced")
         elif enc.startswith(("utf-16", "utf-32")):
             self.add("LOW", "enc-unusual", fc, 0, "", "file is %s encoded (plain-text tools may not show its content)" % enc)
+        if dec.undecodable:
+            self.note_limit(fc, "text encoding not identified (not UTF-8, no plausible legacy decoding)")
+            self.add("MED", "enc-unusual", fc, 0, "", "file is not valid UTF-8 and no supported legacy encoding decodes "
+                     "it plausibly: its non-ASCII text was not analyzed")
         text = T.normalize_eol(text)
         if "\x00" in text:
             text = text.replace("\x00", " ")
         self._classify(fc, text[:3000])
         try:
             self._scan_text(fc, text, budget)
+            for alt, label in dec.alts:
+                if budget.expired():
+                    break
+                alt = T.normalize_eol(alt).replace("\x00", " ")
+                self._alt = True
+                try:
+                    self._scan_alt(fc, alt, budget, label)
+                finally:
+                    self._alt = False
         except RecursionError:
             self.add("HIGH", "scan-incomplete", fc, 0, "", "analysis aborted (structure too deeply nested); file is UNSCANNED in part")
         self._flush_phrases(fc)
@@ -671,21 +813,29 @@ class Scan:
         line = forced_line if forced_line is not None else h.line + line_base
         ctx = label
         note = RULES[h.rule]["title"]
-        if sev == "HIGH" and cls in ("instruction", "consumed") and not obf and mention:
+        if sev == "HIGH" and mention == "ui-copy" and not obf:
+            sev = "MED"
+            ctx = label + "; UI text"
+            note += (" - in page data (JSON, attribute or meta text) and not followed by an order to the reader: "
+                     "probably product or UI copy, read it")
+        elif sev == "HIGH" and cls in ("instruction", "consumed") and not obf and mention in ("example", "prohibition"):
             sev = "MED"
             if mention == "example":
                 ctx = label + "; quoted example"
-                note += (" - framed as an example or a mention (quoted after 'such as' / 'e.g.', described as "
-                         "'a request to ...', or in an example block): read the context")
+                note += (" - framed as an example by wording that names an attack (quoted or in a code span after "
+                         "'attackers write', 'payloads such as', in an example block introduced that way): attackers "
+                         "can imitate this, read the context")
             else:
                 ctx = label + "; under a prohibition"
-                note += " - named in a sentence that forbids it ('never', 'do not', 'defend against'): read the context"
+                note += (" - governed by a prohibition in its own clause ('never ...', 'do not ...', '... is "
+                         "forbidden'): read the context")
         if obf:
             ctx = "%s; %s" % (label, h.mode)
             note += " - found only after undoing %s" % {
                 "deobfuscated": "invisible / format characters, look-alike letters or split markup",
                 "punct-split": "punctuation inside words", "leetspeak": "digit-for-letter substitution",
-                "letter-spaced": "letter spacing", "rot13": "ROT13", "reversed": "reversed text"}.get(h.mode, h.mode)
+                "letter-spaced": "letter spacing", "rot13": "ROT13", "reversed": "reversed text",
+                "camel-split": "words joined in CamelCase"}.get(h.mode, h.mode)
         elif cls == "page":
             note += " (visible text: may be a quoted example, read it in context)"
         elif cls == "consumed":
@@ -712,15 +862,18 @@ class Scan:
     def limits(self):
         return [{"file": T.sanitize(f, 260), "kind": k, "count": n} for (f, k), n in sorted(self._limits.items())]
 
-    def _phrase_stream(self, fc, text, cls, label, budget, visible_matches=None, collect=None, forced_line=None):
+    def _phrase_stream(self, fc, text, cls, label, budget, visible_matches=None, collect=None, forced_line=None,
+                       code_spans=None):
         hits = phrases.scan_text(text, budget)
         if getattr(hits, "capped", ()):
             self.note_limit(fc, "phrase-match-limit")
             self.add("MED", "match-limit", fc, 0, ", ".join(hits.capped)[:120],
                      "more than %d matches of one phrase rule in %s: later occurrences were not examined, "
                      "read the file" % (phrases.MAX_HITS_PER_RULE, label))
-        fctx = framing.Context(text) if hits and cls in ("instruction", "consumed") else None
+        fctx = framing.Context(text, code_spans) if hits and cls in ("instruction", "consumed") else None
         lines = text.split("\n") if fctx is not None else None
+        data_stream = label.split(" (", 1)[0] in _DATA_LABELS
+        starts = None
         for h in hits:
             if collect is not None and h.mode == "plain":
                 collect.add((h.rule, h.match))
@@ -728,9 +881,18 @@ class Scan:
                 # the same words are also visible on the page (title / description / hydration data)
                 self._phrase_hit(fc, h, self._vis_class(fc), label + " (mirrors visible text)", 0, forced_line)
                 continue
+            if data_stream and h.tier == "ai" and h.mode == "plain" and cls == "hidden":
+                # UI strings in JSON / attributes / meta tags name AI products all the time ("Copilot needs
+                # attention"): only an order to the reader right after the address keeps it HIGH.
+                if starts is None:
+                    starts = _line_starts(text)
+                if not phrases.reader_cues(_line_window(text, starts, h.line, h.match)):
+                    self._phrase_hit(fc, h, cls, label, 0, forced_line, mention="ui-copy")
+                    continue
             mention = None
             if fctx is not None and h.mode == "plain" and phrases.severity_for(h.tier, cls) == "HIGH":
-                mention = framing.phrase_mention(fctx, h.line, h.match, self._is_quoted(lines, h))
+                mention = framing.phrase_mention(fctx, h.line, h.match, self._is_quoted(lines, h),
+                                                 consumed=cls == "consumed")
             self._phrase_hit(fc, h, cls, label, 0, forced_line, mention=mention)
         for line, tag in phrases.find_role_tags(text.lower()):
             sev = phrases.severity_for("weak", cls)
@@ -742,9 +904,89 @@ class Scan:
                         " - located in %s" % label if cls == "hidden" else ""), label)
         return hits
 
-    def _scan_text(self, fc, text, budget):
+    def _streams(self, fc, text, budget, suffix=""):
+        """Split the text by visibility and phrase-scan every stream. Returns the HtmlResult (or None)."""
         role = fc.role
         vis_cls = self._vis_class(fc)
+        html = None
+        if fc.is_html:
+            html = markup.analyze_html(text, budget)
+            visible_matches = set()
+            vis_hits = self._phrase_stream(fc, html.streams.get("visible", ""), vis_cls, "visible text" + suffix,
+                                           budget, collect=visible_matches, code_spans=html.code_spans)
+            stream_lines = {}
+            for h in vis_hits:
+                stream_lines.setdefault(h.rule, []).append(h.line)
+            for name in sorted(html.streams):
+                if name == "visible":
+                    continue
+                hs = self._phrase_stream(fc, html.streams[name], "hidden", STREAM_LABEL.get(name, name) + suffix,
+                                         budget, visible_matches if name in MIRROR_STREAMS else None)
+                for h in hs:
+                    stream_lines.setdefault(h.rule, []).append(h.line)
+            for h in phrases.scan_raw_markup(text, budget):
+                near = stream_lines.get(h.rule, ())
+                if not any(abs(h.line - ln) <= 6 for ln in near):
+                    self._phrase_hit(fc, h, "hidden", STREAM_LABEL["raw"] + suffix)
+            for line, tag in phrases.find_role_tags(text.lower()):
+                key = ("inj-role-tags", line)
+                sev = phrases.severity_for("weak", vis_cls)
+                if sev and key not in self._phr:
+                    self._phr[key] = (sev, "inj-role-tags", line, tag, RULES["inj-role-tags"]["title"], "raw markup")
+            self._html_facts(fc, html)
+            for name in ("visible", "hidden", "attr", "comment", "meta", "svg", "jsonld", "script", "style"):
+                self.dump(fc, name + suffix, html.streams.get(name, ""))
+        else:
+            stream_lines = {}
+
+            def keep(hs):
+                for h in hs:
+                    stream_lines.setdefault(h.rule, []).append(h.line)
+            keep(self._phrase_stream(fc, text, vis_cls, "visible text" + suffix, budget))
+            self.dump(fc, "text" + suffix, text)
+            # In Markdown, markup inside code spans/fences is shown literally: it is not live HTML.
+            live = markup.strip_md_code(text) if fc.is_md_like else text
+            if "<!--" in live:
+                cs = markup.comment_stream(live)
+                if cs:
+                    keep(self._phrase_stream(fc, cs, "hidden", STREAM_LABEL["comment"] + suffix, budget))
+                    self._hidden_orders(fc, cs, STREAM_LABEL["comment"])
+                    self.dump(fc, "comment" + suffix, cs)
+                    if role == "instruction" and len(cs.strip()) >= 40:
+                        self.add("LOW", "html-comment-text", fc, T.line_of(live, live.find("<!--")),
+                                 cs.strip()[:160], "%d characters of comment text are invisible when this file is "
+                                 "rendered: read them" % len(cs.strip()))
+            if fc.is_md_like:
+                md = markup.analyze_markdown(live)
+                if md.hidden:
+                    keep(self._phrase_stream(fc, md.hidden, "hidden", STREAM_LABEL["md-hidden"] + suffix, budget))
+                    self._hidden_orders(fc, md.hidden, STREAM_LABEL["md-hidden"])
+                    self.dump(fc, "md-hidden" + suffix, md.hidden)
+                self._md_facts(fc, md)
+                if _HAS_TAG.search(live):
+                    html = markup.analyze_html(live, budget)
+                    for name in sorted(html.streams):
+                        if name in ("visible", "comment"):
+                            continue
+                        keep(self._phrase_stream(fc, html.streams[name], "hidden",
+                                                 STREAM_LABEL.get(name, name) + suffix, budget))
+                        if name != "visible":
+                            self.dump(fc, name + suffix, html.streams[name])
+                    self._html_facts(fc, html, embedded=True)
+                    # Raw source with tags kept as words: text parked in tag or attribute names (or in a tag
+                    # that spans lines) is invisible when the Markdown is rendered.
+                    for h in phrases.scan_raw_markup(live, budget):
+                        if not any(abs(h.line - ln) <= 6 for ln in stream_lines.get(h.rule, ())):
+                            self._phrase_hit(fc, h, "hidden", STREAM_LABEL["raw"] + suffix)
+        return html
+
+    def _scan_alt(self, fc, text, budget, label):
+        """A second decoding of the same bytes (legacy code page): visibility streams and phrases only.
+        Findings identical to the first pass are not repeated."""
+        self._streams(fc, text, budget, " (decoded as %s)" % label)
+
+    def _scan_text(self, fc, text, budget):
+        role = fc.role
         low = text.lower()
 
         # 1. invisible characters
@@ -755,67 +997,7 @@ class Scan:
             self._decoded(fc, payload, name, line, budget, 1, "")
 
         # 2. streams
-        html = None
-        if fc.is_html:
-            html = markup.analyze_html(text, budget)
-            visible_matches = set()
-            vis_hits = self._phrase_stream(fc, html.streams.get("visible", ""), vis_cls, "visible text", budget,
-                                           collect=visible_matches)
-            stream_lines = {}
-            for h in vis_hits:
-                stream_lines.setdefault(h.rule, []).append(h.line)
-            for name in sorted(html.streams):
-                if name == "visible":
-                    continue
-                hs = self._phrase_stream(fc, html.streams[name], "hidden", STREAM_LABEL.get(name, name), budget,
-                                         visible_matches if name in MIRROR_STREAMS else None)
-                for h in hs:
-                    stream_lines.setdefault(h.rule, []).append(h.line)
-            for h in phrases.scan_raw_markup(text, budget):
-                near = stream_lines.get(h.rule, ())
-                if not any(abs(h.line - ln) <= 6 for ln in near):
-                    self._phrase_hit(fc, h, "hidden", STREAM_LABEL["raw"])
-            for line, tag in phrases.find_role_tags(low):
-                key = ("inj-role-tags", line)
-                sev = phrases.severity_for("weak", vis_cls)
-                if sev and key not in self._phr:
-                    self._phr[key] = (sev, "inj-role-tags", line, tag, RULES["inj-role-tags"]["title"], "raw markup")
-            self._html_facts(fc, html)
-        else:
-            stream_lines = {}
-
-            def keep(hs):
-                for h in hs:
-                    stream_lines.setdefault(h.rule, []).append(h.line)
-            keep(self._phrase_stream(fc, text, vis_cls, "visible text", budget))
-            # In Markdown, markup inside code spans/fences is shown literally: it is not live HTML.
-            live = markup.strip_md_code(text) if fc.is_md_like else text
-            if "<!--" in live:
-                cs = markup.comment_stream(live)
-                if cs:
-                    keep(self._phrase_stream(fc, cs, "hidden", STREAM_LABEL["comment"], budget))
-                    if role == "instruction" and len(cs.strip()) >= 40:
-                        self.add("LOW", "html-comment-text", fc, T.line_of(live, live.find("<!--")),
-                                 cs.strip()[:160], "%d characters of comment text are invisible when this file is "
-                                 "rendered: read them" % len(cs.strip()))
-            if fc.is_md_like:
-                md = markup.analyze_markdown(live)
-                if md.hidden:
-                    keep(self._phrase_stream(fc, md.hidden, "hidden", STREAM_LABEL["md-hidden"], budget))
-                self._md_facts(fc, md)
-                if _HAS_TAG.search(live):
-                    html = markup.analyze_html(live, budget)
-                    for name in sorted(html.streams):
-                        if name in ("visible", "comment"):
-                            continue
-                        keep(self._phrase_stream(fc, html.streams[name], "hidden", STREAM_LABEL.get(name, name),
-                                                 budget))
-                    self._html_facts(fc, html, embedded=True)
-                    # Raw source with tags kept as words: text parked in tag or attribute names (or in a tag
-                    # that spans lines) is invisible when the Markdown is rendered.
-                    for h in phrases.scan_raw_markup(live, budget):
-                        if not any(abs(h.line - ln) <= 6 for ln in stream_lines.get(h.rule, ())):
-                            self._phrase_hit(fc, h, "hidden", STREAM_LABEL["raw"])
+        html = self._streams(fc, text, budget)
         if budget.expired():
             return
 
@@ -919,6 +1101,11 @@ class Scan:
 
     def _decoded(self, fc, payload, label, line, budget, depth, prefix):
         """Re-scan decoded text. Everything found here was hidden by an encoding layer."""
+        if self.opts.dump_streams:
+            n = self._dump_chars.get(("decoded", fc.rel), 0)
+            if n < DUMP_DECODED:
+                self._dump_chars[("decoded", fc.rel)] = n + 1
+                self.dump(fc, "%s (line %d)" % (label, line or 0), payload)
         for h in phrases.scan_text(payload, budget):
             if h.tier == "himp":
                 continue
@@ -1064,6 +1251,8 @@ class Scan:
             self.note_url(fc, u, line, "text")
 
     def note_url(self, fc, url, line, origin, is_image=False):
+        if self._alt:
+            return              # a second decoding of the same bytes has the same (ASCII) URLs
         u = url.strip()
         low = u.lower()
         hard = fc.role in ("instruction", "code", "config") or fc.is_md_like and fc.role != "page"
@@ -1201,6 +1390,9 @@ class Scan:
         page = fc.role == "page"
         if html.aborted:
             self.add("MED", "html-parse-abort", fc, 0, "", "markup tokenizer stopped early (%s)" % html.aborted)
+        if html.selector_limit:
+            self.note_limit(fc, "stylesheet selectors not evaluated for every element (limit %d)" %
+                            markup.MAX_COMPLEX_EVALS)
         for url, line, origin in html.urls[:4000]:
             self.note_url(fc, url, line, origin)
         for kind, line, detail in html.facts[:4000]:
@@ -1215,14 +1407,66 @@ class Scan:
                 self.add("LOW" if page and tag == "img" else "MED", "html-zero-size", fc, line, detail[:160],
                          "zero-size or hidden <%s>" % tag)
         hidden = html.streams.get("hidden", "")
-        if len(hidden.strip()) >= (400 if page else 40):
-            reasons = ", ".join("%s x%d" % (k, v) for k, v in sorted(html.hidden_reasons.items())[:6])
-            self.add("LOW" if page or fc.role == "markup" else "MED", "html-hidden-text", fc,
-                     1 + (len(hidden) - len(hidden.lstrip("\n"))), hidden.strip()[:160],
-                     "%d characters of text sit in elements that are not rendered (%s): read them" % (
-                         len(hidden.strip()), reasons))
-        if not embedded and not page and html.comments:
-            pass
+        shown = len("".join(hidden.split()))
+        reasons = ", ".join("%s x%d" % (k, v) for k, v in sorted(html.hidden_reasons.items())[:6])
+        first_line = 1 + (len(hidden) - len(hidden.lstrip("\n")))
+        if page and shown >= HIDDEN_MED_CHARS:
+            # Hidden text on a page needs no known phrase to be an instruction. Normal hidden UI (menus,
+            # dialogs, tab panels, "skip to content") lands here too, which is why this is MED, not HIGH.
+            self.add("MED", "html-hidden-text", fc, first_line, hidden.strip()[:160],
+                     "%d characters of text sit in elements that are not rendered (%s). Menus, dialogs and tab "
+                     "panels look like this too: read the hidden text (scan.py --dump-streams prints it)" % (
+                         shown, reasons))
+        elif not page and len(hidden.strip()) >= 40:
+            self.add("LOW" if fc.role == "markup" else "MED", "html-hidden-text", fc, first_line,
+                     hidden.strip()[:160], "%d characters of text sit in elements that are not rendered (%s): "
+                     "read them" % (len(hidden.strip()), reasons))
+        for line, why, seg in html.segments[:400]:
+            self._hidden_orders(fc, seg, "a hidden element (%s)" % why, line)
+        visible = html.streams.get("visible", "")
+        for name, where in (("comment", "an HTML comment"), ("attr", "an attribute value"), ("meta", "a meta tag")):
+            self._hidden_orders(fc, html.streams.get(name, ""), where,
+                                mirror=visible if name in ("attr", "meta") else None)
+        if html.collapsed and (page or embedded):
+            text = " ".join(t for _ln, t in html.collapsed)
+            if len("".join(text.split())) >= HIDDEN_MED_CHARS:
+                self.add("LOW", "html-collapsed-text", fc, html.collapsed[0][0], text.strip()[:160],
+                         "%d characters sit in a closed <details> block: shown only when a reader expands it, "
+                         "always read by an agent (informational)" % len(text.strip()))
+        if html.indirect:
+            where, sample = html.indirect[0]
+            self.add("MED", "css-indirection", fc, 0, sample[:140],
+                     "%d %s rule(s) set display / visibility / opacity / position or similar through var(): the "
+                     "value may come from a stylesheet this scanner does not see, so hidden text may be "
+                     "classified as visible. Read the page's text" % (len(html.indirect), where))
+
+    def _hidden_orders(self, fc, text, where, line=None, mirror=None):
+        """HIGH when text a reader does not see gives orders to the reader (no known phrase needed).
+        `mirror`: visible text of the same page; an attribute or meta text that repeats it is not hidden."""
+        if not text or len(text) < 12:
+            return
+        used = self._orders_chars
+        if used > 2_000_000:
+            return
+        self._orders_chars = used + min(len(text), 1_000_000)
+        cues = phrases.reader_cues(text[:1_000_000])
+        if not cues:
+            return
+        if mirror is not None:
+            # Page data (attributes, meta tags) describes the page: a cue that repeats visible text, or that
+            # names an attack (a page description saying how attackers hide such text), is not an order.
+            seen = " ".join(_WORDS_RX.sub(" ", mirror.lower()).split())
+            cues = [(p, c) for p, c in cues
+                    if not _mirrored(text[max(0, p - 20):p + 160], seen)
+                    and not framing.names_an_attack(text[max(0, p - 160):p])]
+            if not cues:
+                return
+        pos, cue = cues[0]
+        ln = line if line is not None else text.count("\n", 0, pos) + 1
+        names = ", ".join(sorted({c for _p, c in cues})[:4])
+        self.add("HIGH", "hidden-order", fc, ln, text[max(0, pos - 40):pos + 180],
+                 "text in %s, which a reader does not see, gives orders to the reader (%s): treat it as a hidden "
+                 "instruction and read it (scan.py --dump-streams prints it)" % (where, names), where[:60])
 
     # ------------------------------------------------------------ shape heuristics
 
@@ -1279,7 +1523,8 @@ class Scan:
             flags = sorted({m.group(1) for m in _PDF_ACTIVE.finditer(data[:4_000_000])})
             if flags:
                 self.add("MED", "bin-pdf-active", fc, 0, ", ".join(f.decode() for f in flags),
-                         "PDF has active-content markers; compressed text streams are not inspected")
+                         "PDF has active-content markers (scripts, launch actions or embedded files)")
+            self._pdf(fc, data, budget)
         elif kind in ("media", "data"):
             if ext and ext not in MEDIA_EXT and ext not in (".db", ".sqlite", ".sqlite3", ".webp", ".riff"):
                 self.add("MED", "bin-type-mismatch", fc, 0, "", "extension %s but content is %s" % (ext, label))
@@ -1300,7 +1545,42 @@ class Scan:
                 self._phr[("inj-role-tags", 0)] = ("MED", "inj-role-tags", 0, tag,
                                                    RULES["inj-role-tags"]["title"] + " - in binary strings",
                                                    "strings embedded in a binary file")
-            self._flush_phrases(fc)
+        self._flush_phrases(fc)        # also the PDF text hits: one finding per rule and line
+
+    def _pdf(self, fc, data, budget):
+        """Text from PDF streams (decompressed within limits). Unanalyzable parts make the scan incomplete."""
+        try:
+            res = pdf.extract(data)
+        except (ValueError, OverflowError, MemoryError, RecursionError) as exc:
+            self.note_limit(fc, "PDF could not be parsed (%s)" % type(exc).__name__)
+            self.add("MED", "pdf-unanalyzed", fc, 0, "", "PDF structure could not be parsed: its text was not analyzed")
+            return
+        info = res.info
+        self.inv("pdf %s: %d object(s), %d stream(s), %d decoded, %d image(s) and %d font program(s) not "
+                 "inspected" % (self.safe(fc.rel, 100), info["objects"], info["streams"], info["decoded"],
+                                info["images"], info["fonts"]))
+        for reason, n in sorted(res.limits.items()):
+            self.note_limit(fc, reason, n)
+        if res.limits:
+            self.add("MED", "pdf-unanalyzed", fc, 0, "; ".join(sorted(res.limits))[:200],
+                     "part of this PDF was not analyzed (%s): read the document yourself before trusting it" %
+                     ", ".join("%s x%d" % kv for kv in sorted(res.limits.items()))[:400])
+        vis_cls = self._vis_class(fc) if fc.role == "page" else "hidden"
+        visible = "\n".join(res.visible)
+        hidden = "\n".join(res.hidden)
+        meta = "\n".join(res.meta)
+        for text, cls, label in ((visible, vis_cls, "PDF page text"), (hidden, "hidden", "PDF invisible or "
+                                 "annotation text"), (meta, "hidden", "PDF metadata")):
+            if not text.strip() or budget.expired():
+                continue
+            self.dump(fc, label, text)
+            for h in phrases.scan_text(text, budget):
+                if cls == "hidden" and h.tier in ("soft", "tool"):
+                    continue
+                self._phrase_hit(fc, h, cls, label, forced_line=0)
+            if cls == "hidden":
+                self._hidden_orders(fc, text, "PDF text that is not shown on the page", 0)
+            self._decode_text_only(fc, text, budget, None)
 
     # ------------------------------------------------------------ wrap-up
 

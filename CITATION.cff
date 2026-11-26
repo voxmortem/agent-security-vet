@@ -1,10 +1,11 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata in this file."
 type: software
-title: "agent-security-vet: offline, static security vetting for AI-agent skills, plugins, MCP servers and web content"
+title: "agent-security-vet: static security vetting for AI-agent skills, plugins, MCP servers and web content"
 abstract: >-
-  agent-security-vet is a Claude Code skill (vet-agent-security) plus an offline,
-  static scanner written with the Python standard library only. It checks
+  agent-security-vet is a Claude Code skill (vet-agent-security) plus a static
+  scanner written with the Python standard library only that runs offline (the
+  separate page fetcher needs network). It checks
   third-party agent skills, plugins, MCP servers and repositories before
   installation, checks articles and web pages for hidden prompt injection, and
   audits a browsing-agent setup with benign canary pages. It never executes

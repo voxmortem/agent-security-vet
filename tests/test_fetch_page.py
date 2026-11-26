@@ -347,6 +347,96 @@ class Refusals(unittest.TestCase):
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+class SimulatedLinks(unittest.TestCase):
+    """The Windows branches of the output guard, exercised on every platform with a simulated lstat.
+
+    Creating real symlinks needs privileges on Windows, so CI is the only place the real-link test
+    above runs there. These tests feed fetch_page the stat results Windows produces for a junction or
+    symlink (FILE_ATTRIBUTE_REPARSE_POINT and a reparse tag, no S_IFLNK) and for a race in which the
+    path turns into a link between the check and the write."""
+
+    REPARSE = fetch_page.stat.FILE_ATTRIBUTE_REPARSE_POINT
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="vetscan-test-")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def fake_stat(mode, attrs=0, tag=0):
+        return type("WinStat", (), {"st_mode": mode, "st_file_attributes": attrs, "st_reparse_tag": tag,
+                                    "st_ino": 0, "st_dev": 0})()
+
+    def test_reparse_point_without_s_iflnk_is_a_link(self):
+        s = fetch_page.stat
+        junction = self.fake_stat(s.S_IFDIR | 0o755, self.REPARSE, 0xA0000003)   # IO_REPARSE_TAG_MOUNT_POINT
+        file_link = self.fake_stat(s.S_IFREG | 0o644, self.REPARSE, 0xA000000C)  # IO_REPARSE_TAG_SYMLINK
+        tag_only = self.fake_stat(s.S_IFREG | 0o644, 0, 0x9000001A)              # cloud placeholder
+        for st in (junction, file_link, tag_only, self.fake_stat(s.S_IFLNK | 0o777)):
+            self.assertTrue(fetch_page._is_link_stat(st))
+        self.assertFalse(fetch_page._is_link_stat(self.fake_stat(s.S_IFREG | 0o644)))
+
+    def test_write_refuses_a_simulated_windows_link_and_creates_nothing(self):
+        s = fetch_page.stat
+        target = os.path.join(self.tmp, "page-0000.html")
+        link = self.fake_stat(s.S_IFREG | 0o644, self.REPARSE, 0xA000000C)
+        with patched(fetch_page, "_lstat", lambda p: link if p == target else None):
+            with self.assertRaises(OSError):
+                fetch_page._write_new_file(target, b"overwritten")
+        self.assertEqual([], os.listdir(self.tmp), "nothing may be created through a link")
+
+    def test_write_refuses_when_the_path_turns_into_a_link_after_creation(self):
+        s = fetch_page.stat
+        target = os.path.join(self.tmp, "page-1111.html")
+        real_lstat, calls = fetch_page._lstat, []
+
+        def racing_lstat(p):
+            calls.append(p)
+            if len(calls) == 1:
+                return real_lstat(p)              # nothing there yet
+            return self.fake_stat(s.S_IFREG | 0o644, self.REPARSE, 0xA000000C)
+        with patched(fetch_page, "_lstat", racing_lstat):
+            with self.assertRaises(OSError):
+                fetch_page._write_new_file(target, b"secret page body")
+        self.assertEqual(2, len(calls), "checked before creating and again before writing")
+        with open(target, "rb") as fh:
+            self.assertEqual(b"", fh.read(), "not a byte is written once the path is no longer ours")
+
+    def test_save_refuses_a_simulated_junction_as_out_dir(self):
+        s = fetch_page.stat
+        out = os.path.join(self.tmp, "out")
+        os.mkdir(out)
+        junction = self.fake_stat(s.S_IFDIR | 0o755, self.REPARSE, 0xA0000003)
+        with patched(fetch_page, "_lstat", lambda p: junction if p == out else None):
+            with self.assertRaises(fetch_page.Refused):
+                fetch_page.check_out_dir(out)
+            with self.assertRaises(fetch_page.Refused):
+                fetch_page._save(out, "page-2222.html", b"x")
+        self.assertEqual([], os.listdir(out))
+
+    def test_save_maps_an_existing_link_to_a_refusal(self):
+        s = fetch_page.stat
+        out = os.path.join(self.tmp, "out2")
+        name = "page-3333.html"
+        link = self.fake_stat(s.S_IFREG | 0o644, self.REPARSE, 0xA000000C)
+        real = fetch_page._lstat
+        with patched(fetch_page, "_lstat", lambda p: link if p.endswith(name) else real(p)):
+            with self.assertRaises(fetch_page.Refused):
+                fetch_page._save(out, name, b"x")
+        self.assertEqual([], os.listdir(out))
+
+    def test_normal_write_still_works(self):
+        target = os.path.join(self.tmp, "page-4444.html")
+        fetch_page._write_new_file(target, b"hello")
+        with open(target, "rb") as fh:
+            self.assertEqual(b"hello", fh.read())
+        with self.assertRaises(OSError):
+            fetch_page._write_new_file(target, b"again")
+
     # F1: DNS lookups run under the deadline as well.
     def test_slow_dns_is_cut_by_the_deadline(self):
         release = threading.Event()

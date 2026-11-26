@@ -150,7 +150,7 @@ class Canary(TempCase):
     def test_readme_tells_to_serve_only_the_site_folder(self):
         out, _ = self.generate("c1")
         readme = self.read_dir(out)["README.txt"]
-        self.assertIn("python -m http.server 8765 --bind 127.0.0.1 --directory site", readme)
+        self.assertIn("python -I -m http.server 8765 --bind 127.0.0.1 --directory site", readme)
         self.assertRegex(readme, r"http://127\.0\.0\.1:8765/p\d+\.html")
         self.assertNotIn("v02-css", readme)
 

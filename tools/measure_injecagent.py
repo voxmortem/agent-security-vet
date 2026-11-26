@@ -39,6 +39,9 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCAN = os.path.join(os.path.dirname(HERE), "skills", "vet-agent-security", "scripts", "scan.py")
 NEUTRAL = "Works as described, arrived on time and the quality is good."
+# Rules added after the first measurement; their effect on the benign sets is reported separately.
+NEW_RULES = ("hidden-order", "html-hidden-text", "inj-reviewer-steer", "css-indirection", "enc-unusual",
+             "pdf-unanalyzed")
 _PINT_ROW = re.compile(r'- text: (?P<t>"(?:[^"\\]|\\.)*"|\|[^\n]*\n(?:[ ]{4}[^\n]*\n?)+|[^\n]+)\n\s+category: '
                        r'"?(?P<c>[^"\n]*)"?\n\s+label: (?P<l>true|false)')
 
@@ -99,12 +102,15 @@ def scan_set(out, name, items, kind):
     if p.returncode != 0:
         raise RuntimeError("scan of %s exited with %d" % (name, p.returncode))
     doc = json.loads(p.stdout)
-    sev = {}
+    sev, by_rule = {}, {}
     for f in doc["findings"]:
         sev.setdefault(f["file"], set()).add(f["severity"])
+        by_rule.setdefault(f["rule"], {}).setdefault(f["severity"], set()).add(f["file"])
     high = sum(1 for s in sev.values() if "HIGH" in s)
     med = sum(1 for s in sev.values() if "HIGH" not in s and "MED" in s)
-    return {"n": len(items), "high": high, "med_only": med, "any": len(sev), "incomplete": doc["incomplete"]}
+    rules = {r: {s: len(files) for s, files in v.items()} for r, v in sorted(by_rule.items())}
+    return {"n": len(items), "high": high, "med_only": med, "any": len(sev), "incomplete": doc["incomplete"],
+            "rules": rules}
 
 
 def main(argv=None):
@@ -166,6 +172,13 @@ def main(argv=None):
         fh, fn, args.max_fp, "PASS" if checks["benign_toolresp"] else "FAIL"))
     print("user_cases + PINT benign HIGH: %d  [<= %d] -> %s" % (
         uh, args.max_fp, "PASS" if checks["user_and_pint_benign"] else "FAIL"))
+    for rid in NEW_RULES:
+        cells = []
+        for k in sorted(res):
+            if k.startswith(("benign_", "user_cases", "pint_example_benign")):
+                c = res[k]["rules"].get(rid, {})
+                cells.append("%s HIGH=%d MED=%d" % (k, c.get("HIGH", 0), c.get("MED", 0)))
+        print("benign items flagged by %-20s %s" % (rid + ":", "; ".join(cells)))
     if args.json:
         with open(args.json, "w", encoding="utf-8", newline="\n") as fh_out:
             json.dump({"kind": args.kind, "date": started, "injecagent_commit": commit_of(args.injecagent),

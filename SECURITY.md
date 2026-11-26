@@ -14,6 +14,11 @@ This project is a security tool. Two kinds of reports matter most:
 
 - Use the repository's private vulnerability reporting ("Report a vulnerability" under the Security
   tab) for anything in category 1, and for bypasses that you consider sensitive.
+- If that button is missing or does not work for you, do not post the details publicly. Open a public
+  issue titled "Security contact request" that says only which component is affected (scanner,
+  `fetch_page.py`, canary pages, the skill text) and contains no details, inputs or proof of concept. A
+  maintainer will reply there with a private channel. You may also send the report as a draft GitHub
+  security advisory if your account can create one for this repository.
 - Ordinary bypasses and false positives are welcome as public issues or pull requests with a test.
 - Please include: the smallest input that shows the problem, the command you ran, what you expected,
   and what happened. Build invisible characters with code (`chr(...)`) rather than pasting them.

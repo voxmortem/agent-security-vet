@@ -13,7 +13,7 @@ and saved web pages. Reads files only: it never executes, imports, installs or
 fetches anything it scans. Findings are leads for a careful reader, not proof.
 
 exit codes: 0 = nothing at or above --fail-on, 1 = findings at or above
---fail-on, 2 = usage or I/O error
+--fail-on, 2 = usage or I/O error (or an internal error; never a traceback)
 """
 
 
@@ -42,6 +42,14 @@ def build_parser():
     ap.add_argument("--no-archives", action="store_true", help="do not list/scan archive members")
     ap.add_argument("--include-vendored", action="store_true",
                     help="also scan node_modules, venv and similar dependency directories")
+    ap.add_argument("--dump-streams", action="store_true",
+                    help="also print, sanitized and with line numbers, the text the scanner derived per file: "
+                         "visible / hidden / attribute / comment / metadata streams of pages, archive members, "
+                         "decoded payloads, legacy-decoded text and PDF text. Read hidden or encoded content "
+                         "this way instead of opening the raw file")
+    ap.add_argument("--dump-filter", metavar="TEXT",
+                    help="with --dump-streams: only files whose reported path contains TEXT "
+                         "(an archive member is reported as archive!/member)")
     ap.add_argument("--list-rules", action="store_true", help="print the rule table and exit")
     ap.add_argument("--version", action="version", version="vetscan " + __version__)
     return ap
@@ -57,6 +65,33 @@ def _write(text):
 
 
 def main(argv=None):
+    """Never shows a traceback: an unexpected error is reported in one line and exits with 2."""
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        sys.stderr.write("error: interrupted\n")
+        return 130
+    except Exception as exc:     # last resort; the class name only, no message from scanned content
+        sys.stderr.write("error: internal error (%s); the scan did not complete\n" % type(exc).__name__)
+        return 2
+
+
+def _inside(path, root):
+    """True when path lies inside root. False on different drives or unrelated paths (never raises)."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:            # different drives on Windows, or mixed absolute and relative paths
+        return False
+
+
+def _exists(fn, path):
+    try:
+        return fn(path)
+    except (ValueError, OSError):     # embedded NUL byte, path too long, unencodable name
+        return False
+
+
+def _main(argv=None):
     ap = build_parser()
     try:
         args = ap.parse_args(argv)
@@ -70,15 +105,18 @@ def main(argv=None):
         ap.print_usage(sys.stderr)
         sys.stderr.write("error: a path is required\n")
         return 2
-    if not os.path.lexists(args.path):
+    if not _exists(os.path.lexists, args.path):
         sys.stderr.write("error: path not found\n")
         return 2
+    if args.dump_filter:
+        args.dump_streams = True
     if args.max < 1 or args.max_bytes < 1024 or args.max_files < 1 or args.time_budget <= 0 or args.file_budget <= 0:
         sys.stderr.write("error: numeric options must be positive (--max-bytes at least 1024)\n")
         return 2
     opts = Options(kind=args.kind, max_bytes=args.max_bytes, max_files=args.max_files,
                    file_budget=args.file_budget, total_budget=args.time_budget,
-                   scan_archives=not args.no_archives, include_vendored=args.include_vendored)
+                   scan_archives=not args.no_archives, include_vendored=args.include_vendored,
+                   dump_streams=args.dump_streams, dump_filter=args.dump_filter)
     try:
         scan = Scan(opts).run(args.path)
     except OSError as exc:
@@ -90,13 +128,13 @@ def main(argv=None):
         return 0
     entries, problems = ([], [])
     if args.baseline:
-        if not os.path.isfile(args.baseline):
+        if not _exists(os.path.isfile, args.baseline):
             sys.stderr.write("error: baseline file not found\n")
             return 2
         entries, problems = baseline.load(args.baseline)
         base_abs = os.path.abspath(args.baseline)
         root_abs = os.path.abspath(args.path)
-        if os.path.isdir(root_abs) and os.path.commonpath([base_abs, root_abs]) == root_abs:
+        if os.path.isdir(root_abs) and _inside(base_abs, root_abs):
             problems.append("note: the baseline file lives inside the scanned tree. That is fine for your own "
                             "code; never accept a baseline shipped by the thing you are vetting")
     kept, suppressed, stale = baseline.apply(scan.findings, entries, scan.sha)

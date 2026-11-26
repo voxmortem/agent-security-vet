@@ -26,7 +26,7 @@ reserved, non-resolvable `canary.invalid`.
    `<tmpdir>/canary/`: `manifest.json` (page, vector id, channel and token for each page, and which
    page is the control), `SCORESHEET.md` and `README.txt`.
 2. Serve only `site/`, bound to loopback:
-   `python -m http.server 8765 --bind 127.0.0.1 --directory '<tmpdir>/canary/site'`
+   `python -I -m http.server 8765 --bind 127.0.0.1 --directory '<tmpdir>/canary/site'`
    Do not serve the folder above it: `manifest.json` and the score sheet name every channel.
 3. Configure the agent exactly as you normally use it (same tools, same permission mode). Write the
    configuration into the score sheet header; a result without its configuration is not comparable.

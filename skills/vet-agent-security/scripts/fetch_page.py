@@ -21,10 +21,12 @@ What it does and does not do:
   * size cap (--max-bytes), per-socket timeout (--timeout) and a hard overall deadline (--deadline,
     default 3 * timeout + 10 s, at most 600 s): DNS runs under the deadline and a watchdog shuts
     the socket down when it expires; nothing is saved then
-  * --out must be a new path or an empty real directory (not a file, symlink or junction). Exactly
-    one file is created there with O_CREAT|O_EXCL (never through an existing file or link), named
-    after the SHA-256 of the body; server-supplied file names are ignored; nothing is parsed,
-    rendered or executed
+  * --out must be a new path or an empty real directory (not a file, symlink, junction or other
+    reparse point). Exactly one file is created there: any existing entry at that path is refused
+    (lstat), the file is created with O_CREAT|O_EXCL (and O_NOFOLLOW where it exists), and before a
+    byte is written the path must still be that new regular file, not a link. It is named after the
+    SHA-256 of the body; server-supplied file names are ignored; nothing is parsed, rendered or
+    executed
   * gzip (every member) and deflate bodies are decoded within the size cap; incomplete or damaged
     data is reported as such, never as a complete page
   * prints one ASCII JSON object; text from response headers never reaches it:
@@ -600,24 +602,44 @@ _OPEN_FLAGS = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
 
 
+def _lstat(path):
+    """os.lstat(path), or None when nothing exists there. One place, so tests can simulate the
+    Windows results (a reparse point is not S_ISLNK there) on every platform."""
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+
+
+def _is_link_stat(st):
+    """A symlink, a junction or any other reparse point (Windows marks them with an attribute and a
+    tag instead of S_IFLNK, and os.open follows them)."""
+    return (stat.S_ISLNK(st.st_mode)
+            or bool((getattr(st, "st_file_attributes", 0) or 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            or bool(getattr(st, "st_reparse_tag", 0)))
+
+
 def _is_link_or_junction(path):
     try:
-        st = os.lstat(path)
+        st = _lstat(path)
     except OSError:
         return False
-    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0)
-                                            & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return st is not None and _is_link_stat(st)
 
 
 def check_out_dir(out_dir):
     """Refuse unless out_dir does not exist yet or is an empty real directory. Creates nothing."""
     if not isinstance(out_dir, str) or not out_dir or "\x00" in out_dir:
         raise Refused("--out is not a usable path")
-    if not os.path.lexists(out_dir):
+    try:
+        st = _lstat(out_dir)
+    except OSError:
+        raise Refused("--out cannot be inspected") from None
+    if st is None:
         return
-    if _is_link_or_junction(out_dir):
+    if _is_link_stat(st):
         raise Refused("--out is a symlink or junction")
-    if not os.path.isdir(out_dir):
+    if not stat.S_ISDIR(st.st_mode):
         raise Refused("--out exists and is not a directory")
     try:
         with os.scandir(out_dir) as entries:
@@ -628,9 +650,39 @@ def check_out_dir(out_dir):
         raise Refused("--out exists and is not empty")
 
 
+class LinkInTheWay(FileExistsError):
+    """The output path is (or became) a link, junction or other existing entry."""
+
+
 def _write_new_file(path, data):
-    """Create path (never an existing file or link) and write all of data."""
+    """Create path (never an existing file or link) and write all of data.
+
+    O_CREAT|O_EXCL alone is not enough on Windows: CreateFile follows a dangling symlink there and
+    creates its target. So: refuse any existing entry (lstat), create exclusively, then check before
+    writing a single byte that the path is still our new regular file and not a link."""
+    try:
+        before = _lstat(path)
+    except OSError:
+        raise LinkInTheWay("the output path cannot be inspected") from None
+    if before is not None:
+        raise LinkInTheWay("the output path already exists%s" % (
+            " and is a symlink, junction or reparse point" if _is_link_stat(before) else ""))
     fd = os.open(path, _OPEN_FLAGS, 0o666)
+    try:
+        after, opened = _lstat(path), os.fstat(fd)
+        swapped = (after is None or _is_link_stat(after) or not stat.S_ISREG(after.st_mode)
+                   or not stat.S_ISREG(opened.st_mode))
+        # Same file? (Compared on POSIX only: Windows builds report file ids differently for fstat
+        # and lstat across Python versions; there the link test above is the guard.)
+        if not swapped and os.name != "nt" and opened.st_ino and after.st_ino:
+            swapped = (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+    except BaseException:
+        os.close(fd)
+        raise
+    if swapped:
+        # Nothing was written. Do not unlink: the entry at `path` is not ours.
+        os.close(fd)
+        raise LinkInTheWay("the output path turned into a link or another file while it was being created")
     try:
         view = memoryview(data)
         while view:
@@ -659,6 +711,8 @@ def _save(out_dir, name, body):
     path = os.path.join(out_dir, name)
     try:
         _write_new_file(path, body)
+    except LinkInTheWay as exc:
+        raise Refused(str(exc)) from None
     except FileExistsError:
         raise Refused("the output file already exists") from None
     except OSError:

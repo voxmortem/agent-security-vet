@@ -65,16 +65,92 @@ def _ext(name):
     return "." + base.rsplit(".", 1)[-1] if "." in base else ""
 
 
+def member_names(path, kind, limit=MAX_MEMBERS):
+    """Member names of a zip or tar archive (at most `limit`), or [] when it cannot be listed."""
+    try:
+        if kind == "zip":
+            with zipfile.ZipFile(path) as zf:
+                return [zi.filename for zi in zf.infolist()[:limit]]
+        out = []
+        with tarfile.open(path, "r:*") as tf:
+            for m in tf:
+                out.append(m.name)
+                if len(out) >= limit:
+                    break
+        return out
+    except (zipfile.BadZipFile, tarfile.TarError, OSError, EOFError, ValueError, RuntimeError,
+            NotImplementedError, MemoryError):
+        return []
+
+
+_SKILL_NAMES = frozenset(("skill.md",))
+_PLUGIN_NAMES = frozenset(("plugin.json", "marketplace.json", "hooks.json"))
+_MCP_NAMES = frozenset((".mcp.json", "mcp.json", "server.json", "manifest.json", "claude_desktop_config.json"))
+_REPO_NAMES = frozenset(("claude.md", "agents.md", "agent.md", "gemini.md", ".cursorrules", ".windsurfrules",
+                         ".clinerules", "copilot-instructions.md"))
+
+
+def kind_from_names(names):
+    """skill | mcp | repo from the member names of an archive (a packed skill is a skill)."""
+    bases = {n.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() for n in names}
+    paths = [n.replace("\\", "/").lower() for n in names]
+    if bases & _SKILL_NAMES or any("/.claude-plugin/" in "/" + p for p in paths) or bases & _PLUGIN_NAMES:
+        return "skill"
+    if bases & _MCP_NAMES:
+        return "mcp"
+    return "repo"
+
+
+def roots_from_names(names):
+    """(skill roots, plugin roots): member directories that hold a SKILL.md / a .claude-plugin folder,
+    with a trailing slash ('' for the archive top level)."""
+    skill, plugin = set(), set()
+    for n in names:
+        p = n.replace("\\", "/")
+        low = p.lower()
+        base = low.rsplit("/", 1)[-1]
+        if base == "skill.md":
+            skill.add(p[:len(p) - len(base)])
+        i = ("/" + low).find("/.claude-plugin/")
+        if i != -1:
+            plugin.add(p[:i])           # p[:i] ends with "/" (or is "" at the top level)
+    return sorted(skill)[:500], sorted(plugin)[:500]
+
+
 def scan(S, fc, path, kind, budget):
-    """Inspect one archive. S is the engine Scan; member text goes back through S.scan_member()."""
+    """Inspect one archive. S is the engine Scan; member text goes back through S.scan_member().
+
+    Members are first read into memory (bounded by the limits above), then scanned once the member
+    list is known, so that a SKILL.md inside the archive makes its folder a skill exactly as it would
+    on disk. Members that a limit kept from being read are reported as not analyzed."""
     add = lambda sev, rid, snip, note: S.add(sev, rid, fc, 0, snip, note)   # noqa: E731
     if kind == "opaque":
         add("MED", "archive-opaque", "", "compressed container not listed or opened by this scanner; "
             "inspect it separately in an isolated directory")
         return
     names, trav, links, execs, nested, enc = [], [], [], [], [], 0
-    declared = scanned_total = scanned_members = 0
+    declared = scanned_total = 0
     stopped = ""
+    held = []                 # (name, data) read into memory, scanned after the listing
+    unread = 0                # regular members a limit kept from being read
+
+    def take(name, data_reader, size, bad, ext):
+        nonlocal scanned_total, unread
+        if bad or ext in ARCHIVE_EXT:
+            return
+        if size > MAX_MEMBER_BYTES or len(held) >= MAX_SCAN_MEMBERS or scanned_total >= MAX_SCAN_TOTAL:
+            unread += 1
+            return
+        try:
+            data = data_reader()
+        except Exception:
+            data = None
+        if data is None or len(data) > MAX_MEMBER_BYTES:
+            unread += 1
+            return
+        held.append((name, data))
+        scanned_total += len(data)
+
     try:
         if kind == "zip":
             with zipfile.ZipFile(path) as zf:
@@ -98,18 +174,11 @@ def scan(S, fc, path, kind, budget):
                         nested.append(name)
                     if zi.compress_size and zi.file_size / max(1, zi.compress_size) > 200 and zi.file_size > 50_000_000:
                         stopped = "member %s expands %dx" % (name, zi.file_size // max(1, zi.compress_size))
-                    if (not zi.is_dir() and not (zi.flag_bits & 0x1) and not stat.S_ISLNK(mode)
-                            and zi.file_size <= MAX_MEMBER_BYTES and scanned_members < MAX_SCAN_MEMBERS
-                            and scanned_total < MAX_SCAN_TOTAL and not bad and ext not in ARCHIVE_EXT):
-                        try:
+                    if not zi.is_dir() and not (zi.flag_bits & 0x1) and not stat.S_ISLNK(mode):
+                        def reader(zi=zi):
                             with zf.open(zi) as fh:
-                                data = fh.read(MAX_MEMBER_BYTES + 1)
-                        except Exception:
-                            data = None
-                        if data is not None and len(data) <= MAX_MEMBER_BYTES:
-                            scanned_members += 1
-                            scanned_total += len(data)
-                            S.scan_member(fc, name, data)
+                                return fh.read(MAX_MEMBER_BYTES + 1)
+                        take(name, reader, zi.file_size, bad, ext)
                     if budget.expired():
                         stopped = stopped or "time budget"
                         break
@@ -144,17 +213,11 @@ def scan(S, fc, path, kind, budget):
                     if count >= MAX_MEMBERS:
                         stopped = "more than %d members" % MAX_MEMBERS
                         break
-                    if (m.isreg() and 0 < m.size <= MAX_MEMBER_BYTES and scanned_members < MAX_SCAN_MEMBERS
-                            and scanned_total < MAX_SCAN_TOTAL and not bad and ext not in ARCHIVE_EXT):
-                        try:
+                    if m.isreg() and m.size > 0:
+                        def reader(m=m):
                             fh = tf.extractfile(m)
-                            data = fh.read(MAX_MEMBER_BYTES + 1) if fh else None
-                        except Exception:
-                            data = None
-                        if data is not None and len(data) <= MAX_MEMBER_BYTES:
-                            scanned_members += 1
-                            scanned_total += len(data)
-                            S.scan_member(fc, name, data)
+                            return fh.read(MAX_MEMBER_BYTES + 1) if fh else None
+                        take(name, reader, m.size, bad, ext)
                     if budget.expired():
                         stopped = "time budget"
                         break
@@ -162,8 +225,21 @@ def scan(S, fc, path, kind, budget):
             NotImplementedError, MemoryError) as exc:
         add("MED", "archive-error", "", "archive could not be read (%s); treat as uninspected" % type(exc).__name__)
         return
-    S.inv("archive %s: %d member(s) listed, %d text member(s) scanned in memory, %d bytes declared" % (
-        S.safe(fc.rel, 100), len(names), scanned_members, declared))
+    skill_roots, plugin_roots = roots_from_names(names)
+    for r in skill_roots:
+        S.skill_roots.append(fc.rel + "!/" + r)
+    for r in plugin_roots:
+        S.plugin_roots.append(fc.rel + "!/" + r)
+    for name, data in held:
+        if budget.expired():
+            unread += 1
+            stopped = stopped or "time budget"
+            continue
+        S.scan_member(fc, name, data)
+    S.inv("archive %s: %d member(s) listed, %d member(s) read and scanned in memory, %d bytes declared" % (
+        S.safe(fc.rel, 100), len(names), len(held), declared))
+    if unread:
+        S.note_limit(fc, "archive members not read (size / count limit)", unread)
     if trav:
         add("HIGH", "archive-traversal", "; ".join(sorted(trav)[:4]),
             "%d member path(s) would be written outside the extraction directory" % len(trav))

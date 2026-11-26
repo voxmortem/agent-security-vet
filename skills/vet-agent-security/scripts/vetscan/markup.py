@@ -41,19 +41,28 @@ _HIDE_RULES = (
     ("font-size:0", re.compile(
         r"font-size\s{0,3}:\s{0,3}(?:0(?:\.0{1,6})?(?:px|pt|em|rem|%|vw|vh)?|[01]px|0?\.\d{1,6}p[xt]|"
         r"0?\.0\d{0,6}r?em)\s{0,3}(?:;|!|$)|font\s{0,3}:\s{0,3}0(?:px)?\s{0,3}/")),
-    ("opacity:0", re.compile(r"(?<![a-z-])opacity\s{0,3}:\s{0,3}(?:0(?:\.0\d{0,6})?|\.0\d{0,6})\s{0,3}(?:;|!|$)")),
+    ("opacity:0", re.compile(r"(?<![a-z-])opacity\s{0,3}:\s{0,3}(?:0(?:\.0\d{0,6})?|0?\.0\d{0,6}|[0-9](?:\.\d{1,4})?%)"
+                             r"\s{0,3}(?:;|!|$)")),
+    ("filter:opacity(0)", re.compile(r"filter\s{0,3}:\s{0,3}[^;]{0,80}opacity\(\s{0,3}(?:0(?:\.0\d{0,6})?|0?\.0\d{0,6}|"
+                                     r"[0-9](?:\.\d{1,4})?%)\s{0,3}\)")),
     ("off-screen", re.compile(
         r"(?:left|top|right|bottom|margin-left|margin-top|text-indent)\s{0,3}:\s{0,3}-\s{0,2}"
-        r"(?:\d{4,9}|[1-9]\d{2})(?:px|pt|em|rem|%|vw|vh)?|translate[xy]?\(\s{0,3}-\s{0,2}\d{4,9}")),
+        r"(?:\d{4,9}|[1-9]\d{2})(?:px|pt|em|rem|%|vw|vh)?|translate[xy]?\(\s{0,3}-\s{0,2}\d{4,9}|"
+        r"text-indent\s{0,3}:\s{0,3}\d{4,9}(?:px|pt|em|rem)?")),
     ("clipped", re.compile(
         r"clip\s{0,3}:\s{0,3}rect\(\s{0,3}[01](?:px)?[\s,]{1,4}[01](?:px)?[\s,]{1,4}[01](?:px)?[\s,]{1,4}"
         r"[01](?:px)?\s{0,3}\)|clip-path\s{0,3}:\s{0,3}(?:inset\(\s{0,3}(?:50|100)%|circle\(\s{0,3}0|"
         r"polygon\(\s{0,3}0(?:px)?\s{1,3}0(?:px)?\s{0,3},\s{0,3}0(?:px)?\s{1,3}0(?:px)?\s{0,3},\s{0,3}0)")),
     ("transparent", re.compile(
-        r"(?<![a-z-])color\s{0,3}:\s{0,3}(?:transparent|rgba\([^)]{0,40},\s{0,3}0?(?:\.0{1,4})?\s{0,3}\)|"
-        r"#[0-9a-f]{6}00\b|#[0-9a-f]{3}0\b|hsla\([^)]{0,40},\s{0,3}0\s{0,3}\))")),
-    ("scale(0)", re.compile(r"transform\s{0,3}:\s{0,3}[^;]{0,60}scale\(\s{0,3}0(?:\.0{1,4})?\s{0,3}[,)]")),
+        r"(?<![a-z-])(?:color|-webkit-text-fill-color)\s{0,3}:\s{0,3}(?:transparent|"
+        r"(?:rgb|hsl)a?\(\s{0,3}[\d.]{1,8}(?:%|deg)?\s{0,3},\s{0,3}[\d.]{1,8}%?\s{0,3},\s{0,3}[\d.]{1,8}%?\s{0,3},"
+        r"\s{0,3}(?:0(?:\.0\d{0,4})?|0?\.0\d{0,4}|[0-9](?:\.\d{1,4})?%)\s{0,3}\)|"
+        r"(?:rgb|hsl)a?\([^)/]{0,40}/\s{0,3}(?:0(?:\.0\d{0,4})?|0?\.0\d{0,4}|[0-9](?:\.\d{1,4})?%)\s{0,3}\)|"
+        r"#[0-9a-f]{6}0[0-9a-f]\b|#[0-9a-f]{3}0\b)")),
+    ("scale(0)", re.compile(r"transform\s{0,3}:\s{0,3}[^;]{0,60}scale[xy]?\(\s{0,3}0(?:\.0{1,4})?\s{0,3}[,)]|"
+                            r"(?<![a-z-])scale\s{0,3}:\s{0,3}0(?:\.0{1,4})?\s{0,3}(?:;|!|$)")),
     ("content-visibility", re.compile(r"content-visibility\s{0,3}:\s{0,3}hidden")),
+    ("negative z-index", re.compile(r"z-index\s{0,3}:\s{0,3}-\s{0,2}[1-9]\d{0,9}")),
 )
 _ZERO_SIZE = re.compile(r"(?:^|;|\s)(?:max-)?(?:height|width)\s{0,3}:\s{0,3}[01](?:px)?\s{0,3}(?:;|!|$)")
 _COLOR_DECL = re.compile(r"(?:^|;|\s)color\s{0,3}:\s{0,3}([^;!]{1,40})")
@@ -63,6 +72,12 @@ _RGB_COLOR = re.compile(r"rgba?\(\s{0,3}(\d{1,3})%?[\s,]{1,4}(\d{1,3})%?[\s,]{1,
 _NAMED = {"white": (255, 255, 255), "black": (0, 0, 0), "snow": (255, 250, 250), "ivory": (255, 255, 240),
           "ghostwhite": (248, 248, 255), "whitesmoke": (245, 245, 245), "red": (255, 0, 0),
           "blue": (0, 0, 255), "green": (0, 128, 0), "gray": (128, 128, 128), "grey": (128, 128, 128)}
+# A visibility-deciding property whose value comes from a custom property: the value may be set anywhere.
+_INDIRECT = re.compile(r"(?:^|[;{\s])(?:display|visibility|opacity|position|clip|clip-path|font-size|color|"
+                       r"transform|filter|content-visibility|z-index|text-indent|left|top|width|height)\s{0,3}:"
+                       r"\s{0,3}[^;{}]{0,80}var\(")
+_VAR_USE = re.compile(r"var\(\s{0,3}--([\w-]{1,80})\s{0,3}(?:,\s{0,3}([^()]{0,80}))?\)")
+_VAR_DEF = re.compile(r"--([\w-]{1,80})\s{0,3}:\s{0,3}([^;{}]{1,120})")
 
 
 def parse_color(val):
@@ -84,8 +99,27 @@ def parse_color(val):
     return None
 
 
-def style_hidden(style):
+def resolve_style(style, custom=None):
+    """CSS escapes undone and var(--x) replaced by its value (from `custom`, else the fallback)."""
+    if "\\" in style:
+        style = css_unescape(style) or style
+    if "var(" in style:
+        custom = custom or {}
+
+        def sub(m):
+            return custom.get(m.group(1), m.group(2) or "")
+        for _ in range(3):              # nested var() chains, bounded
+            new = _VAR_USE.sub(sub, style)
+            if new == style:
+                break
+            style = new
+    return style
+
+
+def style_hidden(style, custom=None):
     """Return a short reason if an inline style (lower-cased) hides its element."""
+    if "\\" in style or "var(" in style:
+        style = resolve_style(style, custom)
     for name, rx in _HIDE_RULES:
         if rx.search(style):
             return name
@@ -101,25 +135,175 @@ def _close(a, b):
 _CSS_RULE = re.compile(r"([^{}]{1,400})\{([^{}]{0,4000})\}")
 _CSS_SEL = re.compile(r"([.#])(-?[A-Za-z_][\w-]{0,80})")
 _CSS_ESC = re.compile(r"\\(?:([0-9a-fA-F]{1,6})\s?|([^0-9a-fA-F\n]))")
+_COMBINATOR = re.compile(r"[ \t\n\r\f]{0,20}([>+~])[ \t\n\r\f]{0,20}")
+_COMPOUND_TAG = re.compile(r"^(\*|[a-z][\w-]{0,40})")
+_COMPOUND_PART = re.compile(r"\.([\w-]{1,80})|#([\w-]{1,80})|\[\s{0,3}([\w:-]{1,60})\s{0,3}(?:([~|^$*]?=)\s{0,3}"
+                            r"[\"']?([^\"'\]]{0,80})[\"']?\s{0,3}(?:\s[is])?)?\]|(::?)([\w-]{1,40})(\([^()]{0,80}\))?")
+# Pseudo-classes that describe a state the page is not in by default, and pseudo-elements (the rule then
+# hides generated content, not the element's text).
+_STATEFUL = frozenset("hover focus active visited checked target focus-within focus-visible".split())
+MAX_COMPLEX = 400
 
 
-def css_hidden_selectors(css):
-    """Classes and ids that a <style> block hides."""
-    classes, ids = set(), set()
+class CssInfo:
+    __slots__ = ("classes", "ids", "complex", "custom", "indirect")
+
+    def __init__(self):
+        self.classes, self.ids, self.complex, self.custom, self.indirect = set(), set(), [], {}, []
+
+
+def _parse_compound(tok):
+    """'div.a#b[data-k="1"]' -> (tag, classes, id, attrs) or None when it cannot be matched statically."""
+    tag = None
+    m = _COMPOUND_TAG.match(tok)
+    pos = 0
+    if m:
+        tag = None if m.group(1) == "*" else m.group(1)
+        pos = m.end()
+    classes, ident, attrs = set(), None, []
+    while pos < len(tok):
+        m = _COMPOUND_PART.match(tok, pos)
+        if not m:
+            return None
+        pos = m.end()
+        if m.group(1):
+            classes.add(m.group(1))
+        elif m.group(2):
+            ident = m.group(2)
+        elif m.group(3):
+            attrs.append((m.group(3), m.group(4) or "", m.group(5) or ""))
+        elif m.group(6):
+            if m.group(6) == "::" or m.group(7) in _STATEFUL or m.group(7) in ("before", "after", "placeholder",
+                                                                            "selection", "marker"):
+                return None
+    if tag is None and not classes and ident is None and not attrs:
+        return ("*", frozenset(), None, ()) if tok.startswith("*") else None
+    return (tag, frozenset(classes), ident, tuple(attrs))
+
+
+def parse_selector(sel):
+    """'article > div.z + p' -> [(compound, combinator-to-the-left)...] right to left, or None."""
+    sel = _COMBINATOR.sub(lambda m: " %s " % m.group(1), sel.strip())
+    if not sel or len(sel) > 300:
+        return None
+    toks = sel.split()
+    out, comb = [], " "
+    for tok in toks:
+        if tok in (">", "+", "~"):
+            comb = tok
+            continue
+        c = _parse_compound(tok)
+        if c is None:
+            return None
+        out.append((c, comb if out else ""))
+        comb = " "
+    if not out or len(out) > 5:
+        return None
+    return out[::-1]
+
+
+def css_hidden_selectors(css, info=None):
+    """What a <style> block hides: classes and ids (last compound, as before), complex selectors
+    (tags, attribute selectors, child and sibling combinators), custom properties, var() indirection."""
+    info = info or CssInfo()
     low = css.lower()
+    if "--" in low:
+        for m in _VAR_DEF.finditer(low[:400_000]):
+            if len(info.custom) < 2000:
+                info.custom.setdefault(m.group(1), m.group(2).strip())
     if "{" not in low:
-        return classes, ids
+        return info
     for m in _CSS_RULE.finditer(low[:400_000]):
         decl = m.group(2)
-        if not style_hidden(decl):
+        if "var(" in decl and _INDIRECT.search(decl) and len(info.indirect) < 20:
+            info.indirect.append(" ".join((m.group(1).strip()[-60:] + "{" + decl.strip()[:80] + "}").split()))
+        if not style_hidden(decl, info.custom):
             col, bg = _COLOR_DECL.search(decl), _BG_DECL.search(decl)
             if not (col and bg and _close(parse_color(col.group(1)), parse_color(bg.group(1)))):
                 continue
         for sel in m.group(1).split(","):
-            last = sel.strip().split()[-1] if sel.strip() else ""
-            for kind, name in _CSS_SEL.findall(last):
-                (classes if kind == "." else ids).add(name)
-    return classes, ids
+            sel = sel.strip()
+            if not sel or sel.startswith("@"):
+                continue
+            last = sel.split()[-1]
+            if "::" in last or any(":" + p in last for p in _STATEFUL):
+                continue
+            found = _CSS_SEL.findall(last)
+            for kind, name in found:
+                (info.classes if kind == "." else info.ids).add(name)
+            if (not found or any(c in sel for c in "+~")) and len(info.complex) < MAX_COMPLEX:
+                chain = parse_selector(sel)
+                if chain and chain not in info.complex:
+                    info.complex.append(chain)
+    return info
+
+
+def _compound_matches(c, desc):
+    tag, classes, ident, attrs = c
+    dtag, dclasses, did, dattrs = desc
+    if tag not in (None, "*") and tag != dtag:
+        return False
+    if classes and not classes <= dclasses:
+        return False
+    if ident is not None and ident != did:
+        return False
+    for name, op, val in attrs:
+        if name not in dattrs:
+            return False
+        have = dattrs[name]
+        if op == "=" and have != val or op == "~=" and val not in have.split() or \
+                op == "^=" and not have.startswith(val) or op == "$=" and not have.endswith(val) or \
+                op == "*=" and val not in have or op == "|=" and not (have == val or have.startswith(val + "-")):
+            return False
+    return True
+
+
+def _chain_matches(chain, path, i, sibs):
+    """chain[k:] matched right to left. path: descriptors of the open elements (root first), the element
+    itself last; sibs[d]: descriptors of the earlier siblings of path[d]. Memoized on (k, depth, number of
+    earlier siblings), so the work is bounded by len(chain) x depth x siblings."""
+    memo = {}
+
+    def at(k, depth, n_sib):
+        # chain[k] has matched the node at `depth` that has `n_sib` earlier siblings in sibs[depth]
+        if k + 1 >= len(chain):
+            return True
+        key = (k, depth, n_sib)
+        if key in memo:
+            return memo[key]
+        memo[key] = False
+        comb = chain[k][1]
+        nxt = chain[k + 1][0]
+        ok = False
+        if comb in (" ", ">"):
+            lo = depth - 1 if comb == ">" else 0
+            for d in range(depth - 1, max(-1, lo - 1), -1):
+                if _compound_matches(nxt, path[d]) and at(k + 1, d, len(sibs[d])):
+                    ok = True
+                    break
+        else:
+            first = n_sib - 1 if comb == "+" else 0
+            for j in range(n_sib - 1, max(-1, first - 1), -1):
+                if _compound_matches(nxt, sibs[depth][j]) and at(k + 1, depth, j):
+                    ok = True
+                    break
+        memo[key] = ok
+        return ok
+    return at(i, len(path) - 1, len(sibs[-1]))
+
+
+def _index_key(c):
+    """Index key of a compound for fast candidate lookup."""
+    tag, classes, ident, attrs = c
+    if ident is not None:
+        return ("#", ident)
+    if classes:
+        return (".", min(classes))
+    if tag not in (None, "*"):
+        return ("t", tag)
+    if attrs:
+        return ("a", attrs[0][0])
+    return ("*",)
 
 
 def css_unescape(css):
@@ -204,39 +388,62 @@ def split_regions(text):
 
 class Stream:
     """Text accumulator that keeps 'newline count + 1 == source line' true."""
-    __slots__ = ("parts", "line", "size")
+    __slots__ = ("parts", "line", "size", "length")
 
     def __init__(self):
         self.parts = []
         self.line = 1
         self.size = 0
+        self.length = 0          # characters in text() so far (offsets of what is added next)
 
     def add(self, text, line, joiner=" "):
+        """Append text; returns its (start, end) offsets in text()."""
         if joiner == " " or not self.parts:
             if line > self.line:
-                self.parts.append("\n" * (line - self.line))
+                sep = "\n" * (line - self.line)
                 self.line = line
             else:
-                self.parts.append(" ")
-        elif joiner:
-            self.parts.append(joiner)
+                sep = " "
+        else:
+            sep = joiner or ""
+        if sep:
+            self.parts.append(sep)
+            self.length += len(sep)
+        start = self.length
         self.parts.append(text)
+        self.length += len(text)
         self.line += text.count("\n")
         self.size += len(text)
+        return start, self.length
 
     def text(self):
         return "".join(self.parts)
 
 
+# Elements whose own text is not rendered when the element itself works (fallback content).
+FALLBACK = frozenset(("canvas", "object", "iframe", "video", "audio", "applet", "embed"))
+# Elements whose visible text is shown literally or set off as a quotation (example framing on pages).
+CODEISH = frozenset(("code", "kbd", "samp", "tt", "pre", "blockquote", "q", "xmp", "listing"))
+MAX_SEGMENTS = 2000
+MAX_ANCESTORS = 64            # ancestors considered by complex selectors
+MAX_COMPLEX_EVALS = 100_000   # element x selector checks (beyond: reported as not analyzed)
+MAX_SEGMENT_CHARS = 20000
+MAX_SIBS = 60
+
+
 class _Walker(HTMLParser):
-    def __init__(self, hidden_classes, hidden_ids):
+    def __init__(self, css):
         super().__init__(convert_charrefs=True)
-        self.hc = hidden_classes
-        self.hi = hidden_ids
+        self.css = css
+        self.hc = {c.lower() for c in css.classes}
+        self.hi = {i.lower() for i in css.ids}
         self.S = {k: Stream() for k in STREAMS}
-        self.stack = []          # (tag, hidden, is_svg, color, bg)
+        self.stack = []          # (tag, hidden, is_svg, color, bg, codeish, details, summary, desc, children)
         self.hidden = 0
         self.svg = 0
+        self.code = 0
+        self.details = 0         # open <details> without the open attribute
+        self.summary = 0
         self.raw_kind = None
         self.block = True
         self.tagged = False
@@ -245,6 +452,16 @@ class _Walker(HTMLParser):
         self.anchor = None
         self.hidden_reasons = {}
         self.overflow = 0
+        self.segments = []       # [line, reason, [text parts], chars] per hidden element tree
+        self.code_spans = []     # (start, end) in the visible stream
+        self.collapsed = []      # (line, text) inside a closed <details>, outside its <summary>
+        self.top_children = []
+        self.indirect = []
+        self.complex_index = {}
+        for chain in css.complex:
+            self.complex_index.setdefault(_index_key(chain[0][0]), []).append(chain)
+        self.complex_budget = MAX_COMPLEX_EVALS
+        self.complex_stopped = False
 
     # -- helpers
     def _colors(self):
@@ -252,7 +469,37 @@ class _Walker(HTMLParser):
             return self.stack[-1][3], self.stack[-1][4]
         return (0, 0, 0), (255, 255, 255)
 
-    def _is_hidden(self, tag, a, color, bg, own_color):
+    def _complex_hidden(self, desc):
+        if not self.css.complex or self.complex_budget <= 0:
+            return False
+        tag, classes, ident, attrs = desc
+        idx = self.complex_index
+        cands = list(idx.get(("t", tag), ())) + list(idx.get(("*",), ()))
+        if ident:
+            cands += idx.get(("#", ident), ())
+        for c in classes:
+            cands += idx.get((".", c), ())
+        for name in attrs:
+            cands += idx.get(("a", name), ())
+        cands = [ch for ch in cands if _compound_matches(ch[0][0], desc)]
+        if not cands:
+            return False
+        self.complex_budget -= len(cands)
+        if self.complex_budget <= 0:
+            self.complex_stopped = True
+        stack = self.stack[-MAX_ANCESTORS:]
+        base = len(self.stack) - len(stack)
+        parent_children = self.stack[base - 1][9] if base > 0 else self.top_children
+        path, sibs = [], []
+        for e in stack:
+            sibs.append(parent_children[-MAX_SIBS - 1:-1])     # earlier siblings of this ancestor
+            path.append(e[8])
+            parent_children = e[9]
+        path.append(desc)
+        sibs.append(parent_children[-MAX_SIBS:])
+        return any(_chain_matches(ch, path, 0, sibs) for ch in cands)
+
+    def _is_hidden(self, tag, a, color, bg, own_color, desc):
         if "hidden" in a:
             return "hidden attribute"
         if a.get("aria-hidden", "").strip().lower() == "true":
@@ -261,18 +508,26 @@ class _Walker(HTMLParser):
             return "<%s>" % tag
         if tag == "dialog" and "open" not in a:
             return "closed <dialog>"
+        if tag in FALLBACK and (tag != "object" or a.get("data") or a.get("type")):
+            return "<%s> fallback content" % tag
         style = a.get("style", "")
         if style:
-            why = style_hidden(style.lower())
+            sl = style.lower()
+            if "var(" in sl and _INDIRECT.search(sl) and len(self.indirect) < 20:
+                self.indirect.append((self.getpos()[0], sl[:120]))
+            why = style_hidden(sl, self.css.custom)
             if why:
                 return why
         cls_attr = a.get("class", "")
         if cls_attr:
             for c in cls_attr.split()[:40]:
-                if c in self.hc or c.lower() in UTIL_HIDDEN:
+                cl = c.lower()
+                if cl in self.hc or cl in UTIL_HIDDEN:
                     return "class ." + c[:40]
-        if a.get("id") and a["id"] in self.hi:
+        if a.get("id") and a["id"].lower() in self.hi:
             return "id hidden by stylesheet"
+        if self._complex_hidden(desc):
+            return "stylesheet selector"
         if self.svg or tag == "svg":
             if (a.get("display", "").strip().lower() == "none"
                     or a.get("visibility", "").strip().lower() == "hidden"
@@ -320,7 +575,7 @@ class _Walker(HTMLParser):
             w, h = a.get("width", "").strip().lower(), a.get("height", "").strip().lower()
             tiny = (w in ("0", "1", "0px", "1px") and h in ("0", "1", "0px", "1px"))
             style = a.get("style", "").lower()
-            if tiny or (style and style_hidden(style)) or "hidden" in a:
+            if tiny or (style and style_hidden(style, self.css.custom)) or "hidden" in a:
                 self.facts.append(("zero-size", line, tag + " " + (a.get("src") or a.get("data") or "")))
 
     # -- parser callbacks
@@ -356,18 +611,36 @@ class _Walker(HTMLParser):
                         bg = c
                     else:
                         color = c
-        why = self._is_hidden(tag, a, color, bg, own)
+        desc = (tag, frozenset(c.lower() for c in a.get("class", "").split()[:40]), a.get("id", "").lower() or None,
+                {k: (v or "").lower() for k, v in list(a.items())[:40]})
+        why = self._is_hidden(tag, a, color, bg, own, desc)
         if why:
             self.hidden_reasons[why] = self.hidden_reasons.get(why, 0) + 1
         self._attrs(tag, a, line)
+        siblings = self.stack[-1][9] if self.stack else self.top_children
+        if len(siblings) < 4 * MAX_SIBS:
+            siblings.append(desc)
+        else:
+            del siblings[:MAX_SIBS]
+            siblings.append(desc)
         if tag in VOID:
             return
         if len(self.stack) < MAX_DEPTH:
-            self.stack.append((tag, bool(why), tag == "svg", color, bg))
+            closed_details = tag == "details" and "open" not in a
+            self.stack.append((tag, bool(why), tag == "svg", color, bg, tag in CODEISH, closed_details,
+                               tag == "summary", desc, []))
             if why:
+                if self.hidden == 0 and len(self.segments) < MAX_SEGMENTS:
+                    self.segments.append([line, why, [], 0])
                 self.hidden += 1
             if tag == "svg":
                 self.svg += 1
+            if tag in CODEISH:
+                self.code += 1
+            if closed_details:
+                self.details += 1
+            if tag == "summary":
+                self.summary += 1
         else:
             self.overflow += 1
         if tag == "script":
@@ -398,6 +671,12 @@ class _Walker(HTMLParser):
                         self.hidden -= 1
                     if e[2]:
                         self.svg -= 1
+                    if e[5]:
+                        self.code -= 1
+                    if e[6]:
+                        self.details -= 1
+                    if e[7]:
+                        self.summary -= 1
                 del stack[i:]
                 break
 
@@ -413,11 +692,20 @@ class _Walker(HTMLParser):
             name = self.raw_kind
         elif self.hidden > 0:
             name = "hidden"
+            if self.segments and self.segments[-1][3] < MAX_SEGMENT_CHARS:
+                seg = self.segments[-1]
+                seg[2].append(data)
+                seg[3] += len(data)
         elif self.svg > 0:
             name = "svg"
         else:
             name = "visible"
-        self.S[name].add(data, line, joiner)
+        span = self.S[name].add(data, line, joiner)
+        if name == "visible":
+            if self.code > 0 and len(self.code_spans) < 50000:
+                self.code_spans.append(span)
+            if self.details > 0 and self.summary == 0 and len(self.collapsed) < 2000:
+                self.collapsed.append((line, data))
         if self.anchor is not None and len(self.anchor[2]) < 20:
             self.anchor[2].append(data)
 
@@ -433,19 +721,18 @@ class _Walker(HTMLParser):
 
 
 class HtmlResult:
-    __slots__ = ("streams", "comments", "facts", "urls", "hidden_reasons", "aborted", "depth_overflow")
+    __slots__ = ("streams", "comments", "facts", "urls", "hidden_reasons", "aborted", "depth_overflow",
+                 "segments", "code_spans", "collapsed", "indirect", "selector_limit")
 
 
 def analyze_html(text, budget=None):
     """Tokenize HTML-ish text and return an HtmlResult. Never raises."""
     comments, regions, blanked = split_regions(text)
-    classes, ids = set(), set()
+    css = CssInfo()
     for kind, _attrs, body in regions:
         if kind == "style":
-            c, i = css_hidden_selectors(body)
-            classes |= c
-            ids |= i
-    w = _Walker(classes, ids)
+            css_hidden_selectors(body, css)
+    w = _Walker(css)
     res = HtmlResult()
     res.aborted = ""
     try:
@@ -483,6 +770,11 @@ def analyze_html(text, budget=None):
     res.urls = w.urls
     res.hidden_reasons = w.hidden_reasons
     res.depth_overflow = w.overflow
+    res.segments = [(ln, why, " ".join("".join(parts).split())) for ln, why, parts, _n in w.segments if parts]
+    res.code_spans = w.code_spans
+    res.collapsed = w.collapsed
+    res.indirect = [("stylesheet", x) for x in css.indirect] + [("inline style", x) for _ln, x in w.indirect]
+    res.selector_limit = w.complex_stopped
     return res
 
 

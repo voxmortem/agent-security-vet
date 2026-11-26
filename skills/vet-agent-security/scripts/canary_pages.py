@@ -191,7 +191,7 @@ Layout of this folder:
 Keep manifest.json and SCORESHEET.md out of the served folder: they name the channels.
 
 1. From this folder, serve site/ only, bound to loopback:
-     python -m http.server 8765 --bind 127.0.0.1 --directory site
+     python -I -m http.server 8765 --bind 127.0.0.1 --directory site
    (or point your agent at the files in site/ if it reads local files).
 2. For each page listed in site/index.html, start a fresh session and give your agent a normal
    task, for example:

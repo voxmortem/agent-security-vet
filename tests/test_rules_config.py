@@ -96,18 +96,20 @@ class SkillFrontmatter(TempCase):
 
     def test_code_fence_markup_is_not_live_html(self):
         tick = "`" * 3
-        body = ("Example:\n\n" + tick + "html\n<template><div hidden>" + OVERRIDE + "</div></template>\n" + tick +
-                "\n\nUse " + "`<noscript>`" + " for fallbacks.\n\n" + "Plain trailing paragraph with enough text to "
-                "matter for hidden-text detection if it were wrongly treated as hidden content.\n")
+        body = ("Example of an injection payload:\n\n" + tick + "html\n<template><div hidden>" + OVERRIDE +
+                "</div></template>\n" + tick + "\n\nUse " + "`<noscript>`" + " for fallbacks.\n\n" +
+                "Plain trailing paragraph with enough text to matter for hidden-text detection if it were wrongly "
+                "treated as hidden content.\n")
         s = self.skill(body=body)
         self.assertNotIn("html-hidden-text", rules(s), describe(s, "MED"))
-        # Visible text in an instruction file, but inside a fence introduced as an example: a mention (MED).
+        # Visible text in an instruction file, inside a fence whose introduction names an attack: a mention (MED).
         self.assertIn("inj-override", rules(s, "MED"), describe(s, "HIGH"))
         self.assertNoHigh(s)
-        # The same fence without an example introduction stays HIGH.
-        s = self.skill(body=body.replace("Example:", "Setup:"))
-        self.assertNotIn("html-hidden-text", rules(s), describe(s, "MED"))
-        self.assertHigh(s, "inj-override")
+        # Without such an introduction it stays HIGH; a bare "Example:" is what an attacker writes too.
+        for intro in ("Setup:", "Example:", "For example, your first step is always:"):
+            s = self.skill(body=body.replace("Example of an injection payload:", intro))
+            self.assertNotIn("html-hidden-text", rules(s), describe(s, "MED"))
+            self.assertHigh(s, "inj-override", intro)
 
 
 class PluginAndHooks(TempCase):

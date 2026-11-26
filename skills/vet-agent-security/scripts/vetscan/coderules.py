@@ -339,7 +339,15 @@ RULES = [
           r"\bprintenv\s{0,3}(?:\||>|$)|(?:^|[;&|]\s{0,2})env\s{0,2}(?:\||>)|get-childitem\s{1,3}env:"
           r"|\bgci\s{1,3}env:|\bdir\s{1,3}env:|\[environment\]::getenvironmentvariables\("
           r"|json\.dumps?\(\s{0,2}(?:dict\(\s{0,2})?os\.environ|(?:print|str|repr)\(\s{0,2}(?:dict\(\s{0,2})?os\.environ\s{0,2}\)"
-          r"|json\.stringify\(\s{0,2}process\.env\s{0,2}[,)]|console\.log\(\s{0,2}process\.env\s{0,2}\)"
+          # the whole environment copied into a value that is serialized, printed or sent
+          r"|(?:json\.dumps?|yaml\.(?:safe_)?dump|pickle\.dumps?|print|str|repr|urlencode|b64encode|pformat)\(\s{0,2}"
+          r"(?:dict\(\s{0,2}os\.environ|\{\s{0,2}\*\*\s{0,2}os\.environ|os\.environ\.copy\(|list\(\s{0,2}os\.environ"
+          r"|os\.environ\.items\()"
+          r"|\b(?:data|json|params|body|payload|content)\s{0,2}=\s{0,2}(?:dict\(\s{0,2}os\.environ|\{\s{0,2}\*\*\s{0,2}"
+          r"os\.environ|os\.environ(?:\.copy\(\s{0,2}\))?\s{0,2}[,)])"
+          r"|json\.stringify\(\s{0,2}(?:\{\s{0,2}\.\.\.\s{0,2})?process\.env\s{0,2}[,)}]"
+          r"|console\.log\(\s{0,2}process\.env\s{0,2}\)|object\.(?:entries|assign)\(\s{0,2}(?:\{\s{0,2}\}\s{0,2},\s{0,2})?"
+          r"process\.env\s{0,2}\)"
           r"|/proc/(?:self|\d{1,7})/environ",
           "dumps the whole environment (where secrets usually live)", prose="LOW", tags=("secret-src",)),
     CRule("sec-env-read", "secrets", "LOW",

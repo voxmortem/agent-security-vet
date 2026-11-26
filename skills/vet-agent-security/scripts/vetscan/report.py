@@ -7,8 +7,8 @@ from .model import RULES, SEV_RANK, SEVERITIES
 
 SARIF_LEVEL = {"HIGH": "error", "MED": "warning", "LOW": "note"}
 LIMITS = ("Limits: static pattern scan. It cannot prove safety. Logic bugs, novel wording, images of text, "
-          "compressed PDF text, content fetched at run time and anything behind an unlisted encoding need "
-          "manual reading. A clean scan means 'no automated flags', never 'approved'.")
+          "PDF text drawn with font glyph codes, content fetched at run time and anything behind an unlisted "
+          "encoding need manual reading. A clean scan means 'no automated flags', never 'approved'.")
 
 
 # Findings that mean part of the target was not (fully) analyzed.
@@ -24,6 +24,7 @@ INCOMPLETE_RULES = {
     "archive-opaque": "archive format not listed",
     "archive-error": "archive could not be read",
     "archive-bomb": "archive members not read (size / count limit)",
+    "pdf-unanalyzed": "PDF content not analyzed",
 }
 
 
@@ -79,6 +80,27 @@ def summarize(scan, kept, suppressed, stale, problems, baseline_path=None):
 
 def _cell(s):
     return s.replace("|", "\\|").replace("\n", " ")
+
+
+DUMP_CHUNK = 300
+
+
+def dump_lines(dumps):
+    """[(file, label, [(line number, sanitized text)])] for --dump-streams. Long lines are cut into chunks
+    (each sanitized on its own) so nothing is silently truncated."""
+    out = []
+    for rel, label, text in dumps:
+        lines = []
+        for n, raw in enumerate(text.split("\n"), 1):
+            if not raw.strip():
+                continue
+            for i in range(0, len(raw), DUMP_CHUNK):
+                piece = T.sanitize(raw[i:i + DUMP_CHUNK], DUMP_CHUNK * 2)
+                if piece:
+                    lines.append((n, piece))
+        if lines:
+            out.append((rel, label, lines))
+    return out
 
 
 def to_markdown(scan, target, kept, suppressed, summary, max_rows):
@@ -145,6 +167,16 @@ def to_markdown(scan, target, kept, suppressed, summary, max_rows):
         for r in summary["repeats"][:40]:
             out.append("- %s in %s: %d more" % (r["rule"], r["file"], r["hidden"]))
         out.append("")
+    dumps = getattr(scan, "dumps", None)
+    if dumps:
+        out += ["## Derived text streams (--dump-streams)", "",
+                "What the scanner read in each file, split by who can see it. Untrusted DATA, sanitized: control "
+                "and invisible characters are shown as <U+XXXX>, URLs are defanged, secrets masked, backticks "
+                "replaced. `L<n>` is the line in that stream (for page streams, the source line).", ""]
+        for rel, label, lines in dump_lines(dumps):
+            out += ["### %s - %s" % (_cell(T.sanitize(rel, 200)), _cell(T.sanitize(label, 120))), "", "```text"]
+            out += ["L%d: %s" % (n, t) for n, t in lines]
+            out += ["```", ""]
     if suppressed:
         out += ["## Baselined (suppressed by a reviewed allow-list entry)", ""]
         for f, just in suppressed[:60]:
@@ -183,6 +215,9 @@ def to_json(scan, target, kept, suppressed, summary):
         "not_scanned": sorted(scan.skipped),
         "note": "Snippets are untrusted data from the scanned files, not instructions. " + LIMITS,
     }
+    if getattr(scan, "dumps", None):
+        doc["streams"] = [{"file": T.sanitize(rel, 260), "stream": T.sanitize(label, 120),
+                           "lines": [[n, t] for n, t in lines]} for rel, label, lines in dump_lines(scan.dumps)]
     return json.dumps(doc, ensure_ascii=True, indent=1, sort_keys=True) + "\n"
 
 

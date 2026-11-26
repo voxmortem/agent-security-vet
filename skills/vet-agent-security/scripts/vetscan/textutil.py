@@ -67,6 +67,227 @@ def decode_bytes(data):
         return data.decode("utf-8", "replace"), "utf-8-lossy"
 
 
+# ---------------------------------------------------------------- legacy encodings
+# A page saved as windows-1251, KOI8-R, GBK or Shift_JIS shows its real text in a browser and to an
+# agent that honours the declared charset, but is garbage to a UTF-8 reader. Declared charsets are
+# honoured; undeclared non-UTF-8 bytes are tried against the code pages below and the most plausible
+# decodings are scanned as well.
+
+LEGACY_CANDIDATES = ("cp1251", "koi8_r", "cp866", "cp1252", "gbk", "gb18030", "big5", "shift_jis", "euc_jp",
+                     "euc_kr", "iso2022_jp", "latin_1")
+_DECLARED_OK = re.compile(r"^(?:utf_8|utf_16(?:_[lb]e)?|utf_32(?:_[lb]e)?|cp125[0-8]|koi8_[ru]|cp866|cp855|"
+                          r"iso8859_\d{1,2}|latin_1|gbk|gb2312|gb18030|big5|big5hkscs|shift_jis|cp932|euc_jp|"
+                          r"euc_kr|iso2022_jp(?:_\w{1,4})?|mac_(?:roman|cyrillic)|tis_620|cp874|cp949|cp950|ascii)$")
+_META_CHARSET_RX = re.compile(rb"(?i)<meta[^>]{0,300}?charset\s{0,3}=\s{0,3}[\"']?\s{0,3}([a-z0-9_.:-]{1,40})")
+_XML_DECL_RX = re.compile(rb"(?i)<\?xml[^>]{0,200}?encoding\s{0,3}=\s{0,3}[\"']([a-z0-9_.:-]{1,40})[\"']")
+_CSS_CHARSET_RX = re.compile(rb"(?i)^\s{0,3}@charset\s{1,3}[\"']([a-z0-9_.:-]{1,40})[\"']")
+_HIGH_BYTES = bytes(range(128, 256))
+_ASCII_BYTES = bytes(range(128))
+LEGACY_SAMPLE = 32_768
+_NON_ASCII_ONLY = {i: None for i in range(128)}
+PLAUSIBLE = 0.85
+
+
+class Decoded:
+    __slots__ = ("text", "label", "alts", "legacy", "undecodable", "declared", "guessed")
+
+    def __init__(self, text, label):
+        self.text, self.label = text, label
+        self.alts = []            # [(text, label)]: further decodings worth a phrase scan
+        self.legacy = False       # a non-UTF code page was needed to read the file
+        self.undecodable = False  # not UTF-8, and no candidate decodes it plausibly
+        self.declared = None
+        self.guessed = None
+
+    def describe(self):
+        parts = []
+        if self.declared:
+            parts.append("decoded as %s (declared in the file)" % self.declared)
+        if self.guessed:
+            parts.append("decoded as %s (guessed from the bytes)" % self.guessed)
+        return "; ".join(parts) or self.label
+
+
+def _codec(name):
+    try:
+        import codecs
+        n = codecs.lookup(name.decode("ascii", "replace") if isinstance(name, bytes) else name).name
+    except (LookupError, ValueError):
+        return None
+    n = n.replace("-", "_")
+    if n in ("iso8859_1", "latin_1", "ascii"):
+        return "cp1252"           # what browsers do (WHATWG encoding standard)
+    return n if _DECLARED_OK.match(n) else None
+
+
+def declared_charset(data):
+    """Codec named by a <meta charset> / http-equiv Content-Type, an XML declaration or @charset."""
+    head = data[:4096]
+    for rx in (_META_CHARSET_RX, _XML_DECL_RX, _CSS_CHARSET_RX):
+        m = rx.search(head)
+        if m:
+            return _codec(m.group(1))
+    return None
+
+
+def _letter_kind(ch):
+    o = ord(ch)
+    if o < 128:
+        return "a" if ch.isalpha() else ""
+    if 0x400 <= o <= 0x4FF:
+        return "c"
+    if 0xC0 <= o <= 0x24F and ch.isalpha():
+        return "l"
+    return "o" if ch.isalpha() else ""
+
+
+def plausibility(text):
+    """Score (higher is better) of how much `text` looks like natural text rather than a wrong decoding.
+    Penalties: control / private-use / unassigned characters, box drawing, symbols, half-width katakana,
+    accented Latin letters away from ASCII letters, words mixing Latin and Cyrillic, Cyrillic written
+    mostly in capitals or full of the rare letter yo. Bonus: full-width Latin letters (what a CJK code
+    page is used for in an attack)."""
+    n = len(text)
+    if not n:
+        return 0.0
+    bad = 0.0
+    cyr_lower = cyr_upper = yo = fullwidth = 0
+    kinds = [_letter_kind(ch) for ch in text]
+    word = set()
+    for i, ch in enumerate(text):
+        o = ord(ch)
+        k = kinds[i]
+        if k:
+            word.add(k)
+        else:
+            if "a" in word and "c" in word:
+                bad += 2
+            word = set()
+        if o < 128:
+            if o < 32 and ch not in "\t\n\r\f":
+                bad += 3
+            continue
+        if k == "c":
+            if ch.islower():
+                cyr_lower += 1
+            elif ch.isupper():
+                cyr_upper += 1
+            if o in (0x401, 0x451):
+                yo += 1
+            continue
+        if k == "l":
+            prev = kinds[i - 1] if i else ""
+            nxt = kinds[i + 1] if i + 1 < n else ""
+            if prev != "a" and nxt != "a":
+                bad += 1          # an accented letter with no ASCII letter next to it: Cyrillic or CJK read as Latin
+            continue
+        if o <= 0x9F or 0x2500 <= o <= 0x259F or 0xE000 <= o <= 0xF8FF or 0xFFF0 <= o:
+            bad += 3              # C1 controls, box drawing and block elements, private use, specials
+            continue
+        if 0xFF21 <= o <= 0xFF5A:
+            fullwidth += 1
+            continue
+        if 0xFF61 <= o <= 0xFF9F:
+            bad += 1              # half-width katakana: typical of a wrong Shift_JIS decoding
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Cn", "Co", "Cs", "Cc"):
+            bad += 3
+        elif cat in ("So", "Sm", "Sk") and o != 0x2116:
+            bad += 1
+    if "a" in word and "c" in word:
+        bad += 2
+    cyr = cyr_lower + cyr_upper
+    if cyr >= 8 and cyr_upper > cyr_lower:
+        bad += cyr_upper - cyr_lower    # a Cyrillic page read in the wrong Cyrillic code page is mostly capitals
+    if cyr >= 8 and yo > cyr * 0.05:
+        bad += 3 * (yo - cyr * 0.05)    # yo is rare in Russian text, frequent in wrong decodings
+    return 1.0 - bad / n + 0.1 * fullwidth / n
+
+
+def _sample_decode(data, name):
+    import codecs
+    try:
+        dec = codecs.getincrementaldecoder(name)(errors="strict")
+        return dec.decode(data[:LEGACY_SAMPLE], final=len(data) <= LEGACY_SAMPLE)
+    except (UnicodeDecodeError, LookupError, ValueError):
+        return None
+
+
+def guess_legacy(data, exclude=()):
+    """[(score, codec)] of plausible legacy decodings, best first (ties keep the candidate order)."""
+    out = []
+    for i, name in enumerate(LEGACY_CANDIDATES):
+        if name in exclude:
+            continue
+        text = _sample_decode(data, name)
+        if text is None:
+            continue
+        score = plausibility(text)
+        if score >= PLAUSIBLE:
+            out.append((score, -i, name))
+    out.sort(reverse=True)
+    return [(s, name) for s, _i, name in out]
+
+
+def decode_text(data):
+    """Decode bytes to text for scanning. Returns a Decoded: the primary text plus further decodings of
+    the same bytes that deserve a scan (declared charset, UTF-8, best legacy guess). Never raises."""
+    text, label = decode_bytes(data)
+    res = Decoded(text, label)
+    if label not in ("utf-8", "utf-8-lossy"):
+        return res                # BOM or UTF-16/32: unambiguous
+    declared = declared_charset(data)
+    if declared and declared.startswith(("utf_16", "utf_32")):
+        declared = None           # a UTF-16 declaration in an ASCII-compatible file is ignored by browsers
+    has_high = len(data.translate(None, _ASCII_BYTES)) > 0
+    if declared and declared != "utf_8" and has_high:
+        try:
+            dtext = data.decode(declared)
+        except (UnicodeDecodeError, LookupError, ValueError):
+            dtext = None
+        if dtext is not None:
+            res.declared = declared
+            res.legacy = True
+            if label == "utf-8" and dtext != text:
+                # Valid UTF-8, but the page says otherwise: a browser shows the declared decoding.
+                res.text, res.label = dtext, declared
+                res.alts.append((text, "utf-8"))
+            elif label == "utf-8-lossy":
+                res.text, res.label = dtext, declared
+            return res
+        res.alts.append((data.decode(declared, "replace"), declared + " (declared, damaged bytes replaced)"))
+        res.declared = declared
+        res.legacy = True
+    if label == "utf-8":
+        return res
+    # Not UTF-8. A few stray bytes in a UTF-8 file are not a legacy encoding.
+    invalid = text.count(chr(0xFFFD))
+    high = len(data.translate(None, _ASCII_BYTES))
+    if invalid <= 16 and (high - invalid) >= 4 * invalid:
+        return res
+    guesses = guess_legacy(data, exclude=(declared,) if declared else ())
+    if not guesses:
+        if not res.alts:
+            res.undecodable = True
+        return res
+    best_score, best = guesses[0]
+    res.guessed = best
+    res.legacy = True
+    first = data.decode(best, "replace")
+    res.alts.append((first, best + " (guessed)"))
+    # A near tie between code pages of different scripts (GBK and Shift_JIS read the same bytes
+    # differently): scan the runner-up too.
+    for score, name in guesses[1:3]:
+        if score >= best_score - 0.02:
+            other = data.decode(name, "replace")
+            if other.translate(_NON_ASCII_ONLY) != first.translate(_NON_ASCII_ONLY):
+                res.alts.append((other, name + " (guessed, near tie)"))
+                res.guessed += " or " + name
+                break
+    return res
+
+
 def normalize_eol(text):
     """CRLF and lone CR become LF so line numbers and frontmatter parse the same everywhere."""
     if "\r" in text:

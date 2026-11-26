@@ -4,7 +4,7 @@
     "name": "agent-security-vet contributors"
   },
   "metadata": {
-    "description": "Offline, static security vetting for agent skills, plugins, MCP servers, repositories and web content (hidden prompt injection)",
+    "description": "Static security vetting for agent skills, plugins, MCP servers, repositories and web content (hidden prompt injection); offline scanner, the separate page fetcher needs network",
     "version": "1.0.0"
   },
   "plugins": [

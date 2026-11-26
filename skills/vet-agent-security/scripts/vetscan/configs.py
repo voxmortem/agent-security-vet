@@ -48,6 +48,7 @@ rule("ci-workflow", "repo", "risky CI workflow construct")
 rule("devcontainer-command", "repo", "devcontainer lifecycle command or host mount")
 rule("container-privileged", "repo", "container runs privileged or mounts the host")
 rule("config-parse-error", "repo", "configuration file could not be parsed (reviewed as plain text only)")
+rule("cfg-remote-instructions", "agent-config", "agent config loads instructions from the network or from outside the project")
 
 MAX_CONFIG_BYTES = 2_000_000
 SENSITIVE_ENV = re.compile(
@@ -366,7 +367,14 @@ def scan_mcp_servers(E, servers, text, where):
         url = cfg.get("url") or cfg.get("serverUrl") or cfg.get("httpUrl")
         cmd = cfg.get("command")
         args = cfg.get("args") if isinstance(cfg.get("args"), list) else []
-        env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+        env = cfg.get("env") if isinstance(cfg.get("env"), dict) else (
+            cfg.get("environment") if isinstance(cfg.get("environment"), dict) else {})
+        if isinstance(cmd, list) and cmd:            # opencode: "command": ["npx", "-y", "pkg"]
+            cmd, args = str(cmd[0]), [str(a) for a in cmd[1:]] + args
+        elif isinstance(cmd, dict):                  # zed: "command": {"path": ..., "args": [...], "env": {...}}
+            args = cmd.get("args") if isinstance(cmd.get("args"), list) else args
+            env = cmd.get("env") if isinstance(cmd.get("env"), dict) else env
+            cmd = cmd.get("path") or cmd.get("command")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
         target = url if isinstance(url, str) else " ".join([str(cmd or "")] + [str(a) for a in args][:8])
         E.inv("MCP server `%s` (%s): %s | env keys: %s" % (
@@ -424,8 +432,12 @@ def scan_mcp_servers(E, servers, text, where):
         if cfg.get("headersHelper"):
             E.add("HIGH", "mcp-shell-command", line, _s(str(cfg["headersHelper"]), 160),
                   "headersHelper runs a shell command to produce request headers")
-        if cfg.get("autoApprove") or cfg.get("alwaysAllow") or cfg.get("trust") is True:
-            E.add("MED", "mcp-auto-approve", line, _s(cfg.get("autoApprove") or cfg.get("alwaysAllow") or "trust"),
+        if cfg.get("trust") is True:
+            E.add("HIGH", "mcp-auto-approve", line, "trust: true",
+                  "MCP server `%s` is trusted: every one of its tool calls runs without a confirmation" %
+                  _s(str(name), 40))
+        elif cfg.get("autoApprove") or cfg.get("alwaysAllow"):
+            E.add("MED", "mcp-auto-approve", line, _s(cfg.get("autoApprove") or cfg.get("alwaysAllow")),
                   "MCP server config pre-approves tool calls")
 
 
@@ -566,7 +578,16 @@ def scan_marketplace_json(E, data, text):
 
 
 _BROAD_ALLOW = re.compile(r"^(?:\*|Bash|Bash\(\*\)|Bash\(\*:\*\)|Write|Edit|MultiEdit|WebFetch|WebFetch\(domain:\*\)|"
-                          r"mcp__\*|Read\((?:~|/|\*\*)[^)]{0,10}\)|Read)$")
+                          r"mcp__\*|Read\((?:~|/|\*\*)[^)]{0,10}\)|Read|Shell|Shell\(\*{1,2}(?::\*)?\)|"
+                          r"Write\(\*{1,2}[^)]{0,10}\)|run_shell_command|ShellTool)$")
+# Other agents' project config files that can start MCP servers, widen permissions or load instructions.
+AGENT_CONFIG_RX = re.compile(
+    r"(?:^|/)(?:\.gemini/settings\.json|\.qwen/settings\.json|\.zed/settings\.json|\.cursor/cli\.json|"
+    r"\.cursor/cli-config\.json|(?:\.opencode/)?opencode\.jsonc?|\.?crush\.json|\.amazonq/(?:mcp|default)\.json|"
+    r"\.continue/config\.json|\.kiro/settings/[\w.-]{1,60}\.json|\.roo/[\w.-]{1,60}\.json|\.windsurf/[\w.-]{1,60}\.json|"
+    r"\.codeium/[\w.-]{1,60}\.json|\.junie/[\w.-]{1,60}\.json|\.augment/[\w.-]{1,60}\.json)$")
+_BYPASS_KEYS = ("autoAccept", "yolo", "always_allow_tool_actions", "dangerouslySkipPermissions", "skipPermissions",
+                "autoApproveAll", "auto_approve", "dangerously_skip_permissions", "bypassPermissions")
 
 
 def scan_settings(E, data, text, where):
@@ -644,6 +665,81 @@ def scan_settings(E, data, text, where):
               "%s: suppresses a safety prompt / explicitly keeps skill shell execution on" % where)
     if isinstance(data.get("mcpServers"), dict):
         scan_mcp_servers(E, data["mcpServers"], text, where)
+
+
+def _walk_keys(data, depth=0):
+    """(key, value) pairs of nested dicts, bounded."""
+    if depth > 6 or not isinstance(data, dict):
+        return
+    for i, (k, v) in enumerate(data.items()):
+        if i > 400:
+            return
+        yield str(k), v
+        if isinstance(v, dict):
+            yield from _walk_keys(v, depth + 1)
+
+
+def scan_agent_config(E, data, text, where):
+    """Project config of Gemini CLI, Qwen Code, Zed, Cursor CLI, opencode, Crush, Amazon Q, Continue,
+    Kiro, Roo and similar agents: MCP servers, permission bypasses and allow rules, instructions loaded
+    from elsewhere, hooks."""
+    if not isinstance(data, dict):
+        return
+    for key in ("mcpServers", "servers", "mcp", "context_servers", "mcp_servers"):
+        srv = data.get(key)
+        if isinstance(srv, dict) and srv and all(isinstance(v, dict) for v in srv.values()):
+            scan_mcp_servers(E, srv, text, where)
+    for k, v in _walk_keys(data):
+        if k in _BYPASS_KEYS and v is True:
+            E.add("HIGH", "settings-permissions", line_of_key(text, k), "%s: true" % _s(k, 40),
+                  "%s: `%s` lets the agent act without asking (permission prompts off)" % (where, _s(k, 40)))
+        elif k in ("approvalMode", "approval_mode", "approval_policy") and isinstance(v, str) and v.lower() in (
+                "yolo", "never", "auto", "full-auto", "autoedit", "auto_edit"):
+            E.add("HIGH", "settings-permissions", line_of_key(text, k), "%s: %s" % (_s(k, 30), _s(v, 30)),
+                  "%s: approval mode `%s` removes or automates approval" % (where, _s(v, 30)))
+    perms = data.get("permissions") if isinstance(data.get("permissions"), dict) else None
+    if perms is not None:
+        allow = [a for a in perms.get("allow", []) if isinstance(a, str)] if isinstance(perms.get("allow"), list) else []
+        broad = [a for a in allow if _BROAD_ALLOW.match(a)]
+        if broad:
+            E.add("HIGH", "settings-permissions", line_of_key(text, "allow"), _s(", ".join(broad), 160),
+                  "%s: blanket allow rule(s) remove permission prompts for whole tools" % where)
+        elif allow:
+            E.add("MED", "settings-permissions", line_of_key(text, "allow"), _s(", ".join(allow[:8]), 160),
+                  "%s: allow rule(s) pre-approve tool use" % where)
+    perm = data.get("permission")
+    if isinstance(perm, dict):                       # opencode: {"bash": "allow", "edit": "allow", ...}
+        loose = sorted(str(k) for k, v in perm.items() if v == "allow" or (isinstance(v, dict) and (
+            v.get("*") == "allow")))
+        if loose:
+            hot = [k for k in loose if k in ("bash", "shell", "webfetch", "*", "external_directory")]
+            E.add("HIGH" if hot else "MED", "settings-permissions", line_of_key(text, "permission"),
+                  _s(", ".join(loose), 120), "%s: permission set to `allow` for %s (no prompt)" % (
+                      where, _s(", ".join(loose), 80)))
+    elif perm == "allow":
+        E.add("HIGH", "settings-permissions", line_of_key(text, "permission"), "permission: allow",
+              "%s: every tool is allowed without a prompt" % where)
+    instr = data.get("instructions") or data.get("contextFileName") or data.get("rules")
+    items = instr if isinstance(instr, list) else [instr] if isinstance(instr, str) else []
+    remote = [i for i in items if isinstance(i, str) and re.match(r"(?i)^(?:https?|ftp)://", i.strip())]
+    outside = [i for i in items if isinstance(i, str) and i not in remote and (
+        i.startswith(("/", "~", "..")) or re.match(r"^[A-Za-z]:[\\/]", i))]
+    if remote:
+        E.add("HIGH", "cfg-remote-instructions", line_of_key(text, "instructions"), _s(", ".join(remote[:4]), 160),
+              "%s: the agent loads its instructions from the network: they can change at any time and were "
+              "not part of this review" % where)
+        for u in remote[:20]:
+            E.url(u, line_of_key(text, "instructions"), "config")
+    if outside:
+        E.add("MED", "cfg-remote-instructions", line_of_key(text, "instructions"), _s(", ".join(outside[:4]), 160),
+              "%s: the agent loads instruction files from outside the project" % where)
+    if isinstance(data.get("hooks"), dict) and data["hooks"]:
+        scan_hooks(E, data["hooks"], text, where, "settings-hooks")
+    env = data.get("env") if isinstance(data.get("env"), dict) else {}
+    hot = sorted(k for k in map(str, env) if REDIRECT_ENV.match(k))
+    if hot:
+        E.add("HIGH", "settings-env", line_of_key(text, hot[0]), _s(", ".join(hot[:6]), 160),
+              "%s: overrides %s" % (where, _s(", ".join(hot[:4]), 100)))
 
 
 # ---------------------------------------------------------------- package / build files
@@ -937,7 +1033,14 @@ def analyze(E, fc, text):
 def _json_checks(E, fc, data, text):
     name, rel = fc.name, fc.rel_lower
     if isinstance(data, dict):
-        if rel.endswith(".claude-plugin/plugin.json") or (name == "plugin.json" and "name" in data):
+        if AGENT_CONFIG_RX.search(rel):
+            scan_agent_config(E, data, text, T.sanitize(fc.rel, 80))
+            handled_agent = True
+        else:
+            handled_agent = False
+        if handled_agent:
+            pass
+        elif rel.endswith(".claude-plugin/plugin.json") or (name == "plugin.json" and "name" in data):
             scan_plugin_json(E, data, text)
         elif name == "marketplace.json":
             scan_marketplace_json(E, data, text)
@@ -955,7 +1058,8 @@ def _json_checks(E, fc, data, text):
                   "plugin monitors run shell commands in the background, outside the sandbox")
         elif name == ".lsp.json":
             E.add("MED", "plugin-manifest", 1, _s(data, 160), "plugin starts language-server processes")
-        handled = name in ("marketplace.json",) or name.startswith("settings") or name == "plugin.json"
+        handled = (handled_agent or name in ("marketplace.json",) or name.startswith("settings")
+                   or name == "plugin.json")
         if not handled:
             for key in ("mcpServers", "servers", "mcp_servers"):
                 srv = data.get(key)

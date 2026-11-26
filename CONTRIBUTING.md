@@ -44,16 +44,20 @@ is much slower than a laptop, set `VETSCAN_TEST_TIME_FACTOR` (for example `3`) t
 
 ## Severity policy (do not change casually)
 
-- hidden, encoded or obfuscated instruction-like text: HIGH
+- hidden, encoded or obfuscated instruction-like text: HIGH; hidden text that gives the reader orders
+  (`hidden-order`): HIGH; any other hidden page text of 20+ visible characters: MED
+- text aimed at the reviewer or scanner (`inj-reviewer-steer`): HIGH, also in ordinary docs
 - the same text in plain sight in a saved article (`--kind article`): MED; in content an agent will
   read (`--kind page`): HIGH for override, concealment, exfiltration and remote-instruction wording unless
-  framed as an example
+  it stands in a code span, fence or blockquote introduced by wording that names an attack
 - visible in a file that agents load as instructions: HIGH for override, concealment, exfiltration and
-  remote-instruction wording; MED for weaker signals and for wording framed as an example or a
-  prohibition in its own clause (see `vetscan/framing.py` and "Honest limits" in the README); a bare
-  quoted order stays HIGH
-- a scan that could not finish: HIGH (`scan-incomplete`); any content left unanalyzed by a limit is listed
-  in the report header as incomplete
+  remote-instruction wording; MED for weaker signals, for wording whose own clause names an attack, and
+  under a prohibition that governs it, as long as the sentence carries no URL, no action on a sensitive
+  object and no compliance wording (see `vetscan/framing.py` and "Honest limits" in the README); weak
+  cues ("such as", "for example", "the user asks you to") lower nothing; a bare quoted order stays HIGH
+- a scan that could not finish: HIGH (`scan-incomplete`); any content left unanalyzed by a limit
+  (including PDF parts, unread archive members and unidentified encodings) is listed in the report header
+  as incomplete
 
 ## Reporting security issues
 

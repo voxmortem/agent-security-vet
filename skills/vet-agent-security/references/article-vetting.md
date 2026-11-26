@@ -23,8 +23,10 @@ A page can be honest and booby-trapped, or clean and wrong.
 
 - Before an agent reads the page for its content or acts on it:
   `python -I scripts/scan.py --kind page -- '<tmpdir>/page'`. Visible override, concealment and
-  exfiltration wording is HIGH, because for a reader-agent it is the attack itself; wording framed as an
-  example in its own clause stays MED.
+  exfiltration wording is HIGH, because for a reader-agent it is the attack itself; only wording inside a
+  code span, fence or blockquote introduced by text that names an attack is MED. Hidden text that gives
+  the reader orders is HIGH (`hidden-order`), other hidden text MED. Read hidden and decoded text with
+  `--dump-streams`.
 - When the user wants a write-up vetted (security writing quotes attacks):
   `python -I scripts/scan.py --kind article -- '<tmpdir>/page'`.
 - HIGH findings under `article` mean text that a human reader would not see, or text that was encoded
