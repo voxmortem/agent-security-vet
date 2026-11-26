@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows Keep a Changelog, and
 versions follow semantic versioning.
 
-## [Unreleased]
+## [1.0.0] - 2026-11-26
 
 Fixes from an independent third review (proof-of-concept inputs re-created as tests in
 `tests/test_review3.py`).
@@ -86,7 +86,7 @@ Fixes from an independent third review (proof-of-concept inputs re-created as te
   `homepage` and `repository` fields.
 - Added `llms.txt` (summary and links for language-model tools) and `CITATION.cff` (CFF 1.2.0).
 
-## [1.0.0] - 2026-11-26
+## [0.9.0] - 2026-11-26 (first public commits, before the third review)
 
 ### Added
 - Skill `vet-agent-security` with three modes: vet a skill / plugin / MCP server / repository (A), vet an
